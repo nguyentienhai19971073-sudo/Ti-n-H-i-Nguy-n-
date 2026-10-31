@@ -1,0 +1,6 @@
+{
+  "name": "CHÙA ONLINE — Không Gian Lễ Phật 3D Trực Tuyến",
+  "description": "Ứng dụng 3D tương tác thời gian thực dành cho TikTok LIVE, tái hiện không gian chánh điện chùa Việt Nam trang nghiêm với Phật tử 3D lễ Phật, dâng hoa và thuyết minh giọng đọc tiếng Việt tự động.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
