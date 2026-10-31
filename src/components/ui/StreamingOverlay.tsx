@@ -1,14 +1,16 @@
+import { useMemo } from 'react';
 import { Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
 import {
   ConnectionStatus,
   FeedNotification,
   GiftMapping,
   LotusCeremonyBadge,
-  Participant,
+  MeritLedgerEntry,
   ServerConnectionSnapshot,
   StreamOverlaySettings,
 } from '../../types/temple';
 import { VoiceStateSnapshot } from '../../systems/VoiceManager';
+import { buildBurgundyPanelStyle } from '../../systems/OverlayTheme';
 import { Leaderboard } from './Leaderboard';
 import { BuddhistGiftPanel } from './BuddhistGiftPanel';
 import { FloatingLotusAvatars } from './FloatingLotusAvatars';
@@ -20,11 +22,11 @@ interface StreamingOverlayProps {
   queuedAltarCount: number;
   totalLikesCount: number;
   totalWoodenFishCount: number;
-  leaderboard: Participant[];
+  leaderboard: MeritLedgerEntry[];
+  notifications?: FeedNotification[];
   giftMappings: GiftMapping[];
   giftEventCounts: Record<string, number>;
   activeLotusBadges: LotusCeremonyBadge[];
-  notifications: FeedNotification[];
   prominentGiftBanner: {
     id: string;
     username: string;
@@ -49,10 +51,10 @@ export function StreamingOverlay({
   totalLikesCount,
   totalWoodenFishCount,
   leaderboard,
+  notifications = [],
   giftMappings,
   giftEventCounts,
   activeLotusBadges,
-  notifications,
   prominentGiftBanner,
   connectionSnapshot,
   voiceSnapshot,
@@ -62,132 +64,164 @@ export function StreamingOverlay({
   onTriggerDemoGift,
 }: StreamingOverlayProps) {
   const isLive = connectionSnapshot.status === ConnectionStatus.LIVE;
+  const panelOpacity = overlaySettings.panelOpacity ?? 0.55;
+  const panelScale = overlaySettings.panelScale ?? 0.9;
+
+  const topPlaqueStyle = useMemo(
+    () => buildBurgundyPanelStyle(panelOpacity),
+    [panelOpacity],
+  );
+  const giftBannerStyle = useMemo(
+    () =>
+      buildBurgundyPanelStyle(panelOpacity, {
+        accentGoldBorder: true,
+        scale: panelScale,
+        transformOrigin: 'bottom center',
+      }),
+    [panelOpacity, panelScale],
+  );
+  const subtitleStyle = useMemo(
+    () =>
+      buildBurgundyPanelStyle(panelOpacity, {
+        scale: panelScale,
+        transformOrigin: 'bottom center',
+      }),
+    [panelOpacity, panelScale],
+  );
+  const eventToastStyle = useMemo(
+    () =>
+      buildBurgundyPanelStyle(panelOpacity, {
+        scale: panelScale,
+        transformOrigin: 'bottom left',
+      }),
+    [panelOpacity, panelScale],
+  );
+  const controlBtnStyle = useMemo(
+    () => buildBurgundyPanelStyle(panelOpacity),
+    [panelOpacity],
+  );
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-2 sm:p-3">
+    <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-1 sm:p-1.5">
       {/* ==========================================================================
-          FLOATING PINK LOTUS AVATAR BADGES (Left & Right Altar Flanks ONLY)
-          Never overlaps the Golden Buddha's face, body, halo, or central altar!
+          FLOATING SACRED LOTUS CEREMONY EMBLEMS (Left & Right Outer Edges ONLY)
+          Zero profile avatars; never overlaps the Golden Buddha or central sanctuary!
          ========================================================================== */}
       {overlaySettings.showLotusAvatars && (
-        <FloatingLotusAvatars badges={activeLotusBadges} />
+        <FloatingLotusAvatars
+          badges={activeLotusBadges}
+          panelOpacity={panelOpacity}
+          panelScale={panelScale}
+        />
       )}
 
       {/* ==========================================================================
-          TOP ZONE: SACRED TEMPLE PLAQUE + LIKE = GÕ MÕ GUIDE + SIDE CORNERS
-          Upper-Left: "BẢNG CÔNG ĐỨC" | Center: 100% Open Buddha View | Upper-Right: "🪷 CÚNG DƯỜNG CẦU AN"
+          TOP EDGE: COMPACT RGBA HEADER + PARTICIPANT COUNTER + EDGE SIDE PANELS
+          Upper-Left: "BẢNG CÔNG ĐỨC" | Center: 100% Open Golden Buddha | Upper-Right: "CÚNG DƯỜNG CẦU AN"
          ========================================================================== */}
-      <div className="flex flex-col gap-1.5 relative z-20">
-        {/* Refined Dark-Burgundy & Gold Temple Plaque */}
-        <header className="w-full rounded-lg bg-gradient-to-b from-[#330b11]/95 via-[#1f080b]/93 to-[#130607]/92 border border-[#d4af37]/55 px-2.5 py-1.5 shadow-lg">
-          {/* Sacred Title & Congregation Status Line */}
-          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
-            <div className="flex items-center gap-1.5 min-w-0">
+      <div className="flex flex-col gap-1 relative z-20">
+        <header style={topPlaqueStyle} className="w-full rounded px-1.5 py-[3px]">
+          <div className="flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5">
+            <div className="flex items-center gap-1 min-w-0">
               <svg
                 viewBox="0 0 24 24"
-                className="w-4 h-4 text-[#ffe082] shrink-0 fill-current"
+                className="w-3 h-3 text-[#ffe082] shrink-0 fill-current"
                 aria-hidden="true"
               >
                 <path d="M12 2.5C10 6 8.2 8.7 8.2 11.4C8.2 13.6 9.8 15.4 12 16C14.2 15.4 15.8 13.6 15.8 11.4C15.8 8.7 14 6 12 2.5ZM4.8 9.4C4.4 12.3 5.7 15 8.6 16.3C7.4 14.5 7 12.2 7.4 10.1C6.5 9.8 5.7 9.6 4.8 9.4ZM19.2 9.4C18.3 9.6 17.5 9.8 16.6 10.1C17 12.2 16.6 14.5 15.4 16.3C18.3 15 19.6 12.3 19.2 9.4ZM3.6 17C6.4 19 9.2 19.8 12 19.8C14.8 19.8 17.6 19 20.4 17C17.5 17.1 14.7 17.6 12 18.4C9.3 17.6 6.5 17.1 3.6 17Z" />
               </svg>
-              <h1 className="font-display text-base sm:text-lg font-bold tracking-wider text-[#ffe28a] leading-none whitespace-nowrap">
+              <h1 className="font-display text-xs sm:text-[13px] font-bold tracking-wider text-[#ffe699] leading-none whitespace-nowrap">
                 CHÙA ONLINE
               </h1>
-              <span className="text-[#d4af37]/60 text-xs" aria-hidden="true">
+              <span className="text-[#d4af37]/60 text-[9px]" aria-hidden="true">
                 ·
               </span>
-              <span className="font-display text-[11px] sm:text-xs italic text-[#f5e4c6] truncate">
+              <span className="font-display text-[9px] italic text-[#f7ead4] truncate">
                 Nam Mô A Di Đà Phật
               </span>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[10px] text-[#ebd9be] whitespace-nowrap">
+            {/* Compact Participant Counter & Live Status */}
+            <div className="flex items-center gap-1 text-[8px] sm:text-[8.5px] text-[#f5e7cf] whitespace-nowrap">
               <span>
-                <strong className="font-mono-tabular text-[#ffe49e]">{participantsCount}</strong> Phật tử
+                <strong className="font-mono-tabular text-[#ffe699]">{participantsCount}</strong> Phật tử
               </span>
               {waitingCount > 0 && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono-tabular text-[#cbb696]">+{waitingCount} chờ</span>
-                </>
+                <span className="font-mono-tabular text-[#dfd0b8]">(+{waitingCount})</span>
               )}
               {(activeAltarCount > 0 || queuedAltarCount > 0) && (
                 <>
                   <span aria-hidden="true">·</span>
-                  <span className="text-[#ffd978]">
-                    Hành lễ: <strong className="font-mono-tabular">{activeAltarCount}</strong>
-                    {queuedAltarCount > 0 ? ` (+${queuedAltarCount})` : ''}
+                  <span className="text-[#ffe082]">
+                    Lễ <strong className="font-mono-tabular">{activeAltarCount}</strong>
+                    {queuedAltarCount > 0 ? `+${queuedAltarCount}` : ''}
                   </span>
                 </>
               )}
               <span aria-hidden="true">·</span>
               {isLive ? (
-                <span className="text-[#98ebb0] font-semibold">
+                <span className="text-[#9ef0b4] font-semibold">
                   LIVE @{connectionSnapshot.tiktokUsername}
                 </span>
               ) : connectionSnapshot.status === ConnectionStatus.CONNECTING ? (
-                <span className="text-[#f6d375]">Đang kết nối...</span>
+                <span className="text-[#f7d87c]">Kết nối...</span>
               ) : (
-                <span className="text-[#d6c2a3]">Mô phỏng</span>
+                <span className="text-[#e3d2b8]">Demo</span>
               )}
             </div>
           </div>
 
-          {/* BUDDHIST EVENT GUIDE + LIVE LIKE / WOODEN DRUM COUNTERS */}
+          {/* COMPACT EVENT INSTRUCTION BAR + LIKE / WOODEN DRUM COUNTERS */}
           {overlaySettings.showEventBar && (
-            <div className="mt-1 pt-1 border-t border-[#d4af37]/30 space-y-1 text-[10px] leading-tight">
-              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[#f7efe2]">
-                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                  <span className="font-semibold text-[#ffe082] tracking-wide">
-                    ❤️ LIKE: GÕ MÕ
-                  </span>
-                  <span className="text-[#d4af37]/60" aria-hidden="true">
-                    ·
-                  </span>
-                  <span>
-                    <strong className="text-[#f8d778]">Follow:</strong> Thắp hương
-                  </span>
-                  <span className="text-[#d4af37]/60" aria-hidden="true">
-                    ·
-                  </span>
-                  <span>
-                    <strong className="text-[#f8d778]">Share:</strong> Hoa đăng
-                  </span>
-                </div>
-
-                {/* Live Total Likes & Total Wooden Fish Strikes Counters */}
-                <div className="flex items-center gap-2 text-[9.5px] sm:text-[10px] text-[#fbead1] whitespace-nowrap">
-                  <span>
-                    ❤️ Tổng lượt thích:{' '}
-                    <strong className="font-mono-tabular text-[#ffd978]">
-                      {totalLikesCount.toLocaleString('vi-VN')}
-                    </strong>
-                  </span>
-                  <span className="text-[#d4af37]/50" aria-hidden="true">
-                    |
-                  </span>
-                  <span>
-                    🥁 Tổng lượt gõ mõ:{' '}
-                    <strong className="font-mono-tabular text-[#ffd978]">
-                      {totalWoodenFishCount.toLocaleString('vi-VN')}
-                    </strong>
-                  </span>
-                </div>
+            <div className="mt-[2px] pt-[2px] border-t border-[#d4af37]/25 flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5 text-[7.8px] sm:text-[8px] leading-tight text-[#fbf0df]">
+              <div className="flex flex-wrap items-center gap-x-1 min-w-0">
+                <span className="font-semibold text-[#ffe48f]">❤️ Like: Gõ mõ</span>
+                <span className="text-[#d4af37]/55" aria-hidden="true">
+                  ·
+                </span>
+                <span>
+                  <strong className="text-[#f9dc84]">Follow:</strong> Hương
+                </span>
+                <span className="text-[#d4af37]/55" aria-hidden="true">
+                  ·
+                </span>
+                <span>
+                  <strong className="text-[#f9dc84]">Share:</strong> Hoa đăng
+                </span>
               </div>
 
-              <div className="text-center text-[9.5px] text-[#e4d3b5] truncate">
-                <strong className="text-[#f6d375] font-semibold">Bình luận cầu nguyện:</strong>{' '}
-                bình an · sức khỏe · tài lộc · tình duyên · học hành · gia đạo
+              <div className="flex items-center gap-1 text-[7.8px] text-[#fff2dc] whitespace-nowrap shrink-0">
+                <span>
+                  ❤️{' '}
+                  <strong className="font-mono-tabular text-[#ffe082]">
+                    {totalLikesCount.toLocaleString('vi-VN')}
+                  </strong>
+                </span>
+                <span className="text-[#d4af37]/45" aria-hidden="true">
+                  |
+                </span>
+                <span>
+                  🥁{' '}
+                  <strong className="font-mono-tabular text-[#ffe082]">
+                    {totalWoodenFishCount.toLocaleString('vi-VN')}
+                  </strong>
+                </span>
               </div>
             </div>
           )}
         </header>
 
-        {/* UPPER SIDE PANELS: Left = BẢNG CÔNG ĐỨC | Center = Open Sanctuary | Right = 🪷 CÚNG DƯỜNG CẦU AN */}
+        {/* COMPACT EDGE SIDE PANELS: Left = BẢNG CÔNG ĐỨC | Right = CÚNG DƯỜNG CẦU AN */}
         {(overlaySettings.showLeaderboard || overlaySettings.showGiftPanel) && (
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start justify-between gap-1">
             <div>
-              {overlaySettings.showLeaderboard && <Leaderboard leaderboard={leaderboard} />}
+              {overlaySettings.showLeaderboard && (
+                <Leaderboard
+                  leaderboard={leaderboard}
+                  panelOpacity={panelOpacity}
+                  panelScale={panelScale}
+                />
+              )}
             </div>
 
             <div>
@@ -197,6 +231,8 @@ export function StreamingOverlay({
                   giftEventCounts={giftEventCounts}
                   isDemoMode={!isLive}
                   onTriggerDemoGift={onTriggerDemoGift}
+                  panelOpacity={panelOpacity}
+                  panelScale={panelScale}
                 />
               )}
             </div>
@@ -205,54 +241,50 @@ export function StreamingOverlay({
       </div>
 
       {/* ==========================================================================
-          BOTTOM SAFE ZONE: Ceremonial Banner + Activity Feed + VieNeu Subtitles
-          (Leaves the Golden Buddha, Halo, Altar, and Congregation unobstructed!)
+          BOTTOM EDGE: Compact Event Notifications, Gift Notification & Voice Subtitles
+          (Zero global comment panel; zero profile avatars!)
          ========================================================================== */}
-      <div className="flex flex-col gap-1.5 pb-10 sm:pb-3 relative z-20">
-        {/* Ceremonial Large Gift / 1000-Like Milestone Banner */}
-        {prominentGiftBanner && (
-          <div className="mx-auto max-w-[310px] rounded-lg bg-gradient-to-b from-[#54101a]/95 to-[#24080d]/96 border border-[#f5cd63] px-3.5 py-1.5 text-center shadow-xl">
-            <p className="font-display text-[11px] tracking-wider uppercase text-[#ffe082] font-bold">
-              Công Đức Cúng Dường {prominentGiftBanner.isDemo ? '· Mô Phỏng' : ''}
-            </p>
-            <p className="font-display text-base font-bold text-[#fff5d6] leading-tight truncate mt-0.5">
-              @{prominentGiftBanner.username}
-            </p>
-            <p className="text-[10.5px] text-[#f0dec2] truncate">
-              Thành tâm: <span className="text-[#ffe082] font-semibold">{prominentGiftBanner.giftName}</span>{' '}
-              · <span className="font-mono-tabular text-[#ffd966]">+{prominentGiftBanner.points}</span>
-            </p>
-          </div>
-        )}
-
-        {/* Compact Activity Feed (Bottom-Left) */}
+      <div className="flex flex-col gap-1 pb-8 sm:pb-1 relative z-20">
+        {/* Optional Compact Edge Event Notification Panel (Text-Only, Zero Avatars) */}
         {overlaySettings.showNotifications && notifications.length > 0 && (
-          <div className="w-[224px] sm:w-[248px] max-h-[108px] overflow-hidden flex flex-col-reverse gap-1">
-            {notifications.slice(0, 3).map((n) => (
-              <div
-                key={n.id}
-                className="rounded-md bg-[#18070a]/88 border border-[#d4af37]/35 px-2 py-1 text-[10px] leading-snug shadow-sm"
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="font-semibold text-[#ffe082] truncate">@{n.username}</span>
-                  {n.pointsDelta ? (
-                    <span className="font-mono-tabular text-[9.5px] text-[#ffd966] shrink-0">
-                      +{n.pointsDelta}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="text-[#f4e8d6] line-clamp-1">{n.message}</p>
-              </div>
+          <div style={eventToastStyle} className="self-start max-w-[185px] rounded px-2 py-0.5">
+            {notifications.slice(0, 1).map((n) => (
+              <p key={n.id} className="text-[8px] text-[#fff5e2] truncate leading-tight">
+                <strong className="text-[#ffe494]">{n.username}</strong> {n.message}
+                {n.pointsDelta ? (
+                  <span className="font-mono-tabular text-[#ffd978] ml-1">+{n.pointsDelta}</span>
+                ) : null}
+              </p>
             ))}
           </div>
         )}
 
-        {/* Vietnamese VieNeu Narration Subtitles & Audio / OBS Controls */}
-        <div className="flex items-end justify-between gap-2">
-          <div className="flex-1 flex justify-center">
+        {/* Compact Gift Notification Banner (Text-Only, Zero Avatars, RGBA Background) */}
+        {prominentGiftBanner && (
+          <div
+            style={giftBannerStyle}
+            className="mx-auto max-w-[206px] rounded px-2 py-[3px] text-center"
+          >
+            <p className="font-display text-[8px] tracking-wider uppercase text-[#ffe494] font-bold leading-none">
+              Công Đức Cúng Dường{prominentGiftBanner.isDemo ? ' · Demo' : ''}
+            </p>
+            <p className="font-display text-[10px] font-bold text-[#fff8e6] leading-tight truncate mt-0.5">
+              {prominentGiftBanner.username} ·{' '}
+              <span className="text-[#ffe28a]">{prominentGiftBanner.giftName}</span>{' '}
+              <span className="font-mono-tabular text-[#ffd966]">+{prominentGiftBanner.points}</span>
+            </p>
+          </div>
+        )}
+
+        {/* Compact Voice Subtitle Panel & Edge Controls */}
+        <div className="flex items-end justify-between gap-1">
+          <div className="flex-1 flex justify-center min-w-0">
             {voiceSnapshot.currentSubtitle ? (
-              <div className="max-w-[94%] rounded-lg bg-[#1d080c]/93 border border-[#d4af37]/55 px-3 py-1.5 text-center shadow-lg">
-                <p className="font-display text-xs sm:text-sm italic text-[#fff4d4] leading-snug">
+              <div
+                style={subtitleStyle}
+                className="max-w-[92%] rounded px-2 py-[3px] text-center"
+              >
+                <p className="font-display text-[9.5px] sm:text-[10.5px] italic text-[#fff8e6] leading-snug line-clamp-2">
                   “{voiceSnapshot.currentSubtitle}”
                 </p>
               </div>
@@ -260,42 +292,44 @@ export function StreamingOverlay({
               <button
                 type="button"
                 onClick={onEnableAudio}
-                className="pointer-events-auto flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-[#d4af37] hover:bg-[#e3be46] text-[#1a0f07] text-xs font-semibold shadow-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="pointer-events-auto flex items-center gap-1 px-2 py-1 rounded bg-[#d4af37] hover:bg-[#e3be46] text-[#1a0f07] text-[9.5px] font-semibold shadow transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
-                <VolumeX className="w-3.5 h-3.5 shrink-0" />
-                <span>Bật Âm Thanh Chùa &amp; Giọng Đọc Việt</span>
+                <VolumeX className="w-2.5 h-2.5 shrink-0" />
+                <span>Bật Âm Thanh &amp; Giọng Việt</span>
               </button>
             ) : null}
           </div>
 
-          <div className="pointer-events-auto flex items-center gap-1.5 shrink-0">
+          <div className="pointer-events-auto flex items-center gap-1 shrink-0">
             {voiceSnapshot.audioEnabled && (
               <span
                 title="Âm thanh & Giọng đọc VieNeu đã bật"
-                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#1d080c]/90 border border-[#d4af37]/40 text-[11px] text-[#ffe082]"
+                style={controlBtnStyle}
+                className="inline-flex items-center gap-1 px-1.5 py-[3px] rounded text-[9px] text-[#ffe494]"
               >
-                <Volume2 className="w-3.5 h-3.5" />
+                <Volume2 className="w-2.5 h-2.5" />
               </span>
             )}
             <button
               type="button"
               onClick={onToggleObsCleanView}
+              style={controlBtnStyle}
               title={
                 overlaySettings.obsCleanView
                   ? 'Thoát chế độ OBS (Hiện bảng quản trị)'
                   : 'Chế độ toàn màn hình sạch cho OBS'
               }
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1d080c]/90 hover:bg-[#310e15] border border-[#d4af37]/45 text-[11px] font-medium text-[#f5e7ce] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1 px-1.5 py-[3px] rounded hover:brightness-125 text-[9px] font-medium text-[#fff4de] transition-all whitespace-nowrap shrink-0 cursor-pointer"
             >
               {overlaySettings.obsCleanView ? (
                 <>
-                  <Minimize2 className="w-3.5 h-3.5 text-[#ffe082]" />
+                  <Minimize2 className="w-2.5 h-2.5 text-[#ffe494]" />
                   <span>Quản trị</span>
                 </>
               ) : (
                 <>
-                  <Maximize2 className="w-3.5 h-3.5 text-[#ffe082]" />
-                  <span>OBS View</span>
+                  <Maximize2 className="w-2.5 h-2.5 text-[#ffe494]" />
+                  <span>OBS</span>
                 </>
               )}
             </button>

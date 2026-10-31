@@ -3,6 +3,7 @@ import {
   ConnectionStatus,
   TikTokNormalizedEvent,
   ServerConnectionSnapshot,
+  normalizeGiftId,
 } from '../src/types/temple.ts';
 import { getVieNeuServerConfig } from './ttsProxy.ts';
 
@@ -12,7 +13,7 @@ const BLOCKED_PATTERNS = [
 ];
 
 export function sanitizeAndFilterComment(raw: string): string | null {
-  const trimmed = raw.replace(/\s+/g, ' ').trim().slice(0, 160);
+  const trimmed = raw.normalize('NFC').replace(/\s+/g, ' ').trim().slice(0, 400);
   if (!trimmed) return null;
   for (const regex of BLOCKED_PATTERNS) {
     if (regex.test(trimmed)) {
@@ -38,6 +39,7 @@ export class TikTokLiveAdapter {
   private userCommentTimestamps = new Map<string, number>();
   // Deduplicate gift streaks & msgIds so repeated packets aren't double-counted
   private processedStreakTotals = new Map<string, number>();
+  private completedStreakTotals = new Map<string, number>();
   private processedMsgIds = new Set<string>();
   // Track backend-verified cumulative likes per user during live session
   private userLikeTotals = new Map<string, number>();
@@ -263,16 +265,39 @@ export class TikTokLiveAdapter {
       if (!userId) return;
 
       const now = Date.now();
-      const giftId = Number(data?.giftId || data?.giftDetails?.giftId || 5655);
+      const rawGiftId =
+        data?.giftId ?? data?.giftDetails?.giftId ?? data?.extendedGiftInfo?.id ?? '';
+      const giftId = normalizeGiftId(rawGiftId);
+      if (!giftId) return; // Never invent fake fallback Gift IDs
+
       const giftName = String(
-        data?.giftDetails?.giftName || data?.extendedGiftInfo?.name || data?.giftName || 'Gift',
+        data?.giftDetails?.giftName ||
+          data?.extendedGiftInfo?.name ||
+          data?.giftName ||
+          `Gift #${giftId}`,
       );
-      const diamondCount = Number(
-        data?.giftDetails?.diamondCount || data?.extendedGiftInfo?.diamond_count || data?.diamondCount || 1,
+      const giftPictureUrl =
+        typeof data?.giftDetails?.giftPictureUrl === 'string'
+          ? data.giftDetails.giftPictureUrl
+          : Array.isArray(data?.extendedGiftInfo?.icon?.url_list) &&
+              typeof data.extendedGiftInfo.icon.url_list[0] === 'string'
+            ? data.extendedGiftInfo.icon.url_list[0]
+            : typeof data?.giftPictureUrl === 'string'
+              ? data.giftPictureUrl
+              : undefined;
+
+      const diamondCount = Math.max(
+        0,
+        Number(
+          data?.giftDetails?.diamondCount ??
+            data?.extendedGiftInfo?.diamond_count ??
+            data?.diamondCount ??
+            1,
+        ),
       );
-      const repeatCount = Math.max(1, Number(data?.repeatCount || 1));
+      const repeatCount = Math.max(1, Math.round(Number(data?.repeatCount || 1)));
       const giftType = Number(data?.giftDetails?.giftType ?? data?.giftType ?? 0);
-      const repeatEnd = Boolean(data?.repeatEnd);
+      const repeatEnd = giftType === 1 ? Boolean(data?.repeatEnd) : true;
 
       const rawMsgId = data?.common?.msgId ? String(data.common.msgId) : '';
       if (rawMsgId) {
@@ -284,26 +309,42 @@ export class TikTokLiveAdapter {
         }
       }
 
-      // Streakable gifts (giftType === 1): compute delta so streaks never double-count
-      const streakKey = `${userId}:${giftId}:${data?.groupId || 'default'}`;
+      // Streakable gifts (giftType === 1): compute exact delta so streaks & reconnects never double-count
+      const groupToken = String(data?.groupId ?? data?.streakId ?? data?.comboId ?? 'default');
+      const streakKey = `${userId}:${giftId}:${groupToken}`;
       let deltaCount = repeatCount;
+      let isStreakCompletionOnly = false;
 
       if (giftType === 1) {
-        const previousCount = this.processedStreakTotals.get(streakKey) || 0;
-        if (repeatCount <= previousCount) {
-          if (repeatEnd) this.processedStreakTotals.delete(streakKey);
+        const completedMax = this.completedStreakTotals.get(streakKey);
+        if (completedMax !== undefined && repeatCount <= completedMax) {
           return;
         }
-        deltaCount = repeatCount - previousCount;
+
+        const previousCount = this.processedStreakTotals.get(streakKey) || 0;
+        if (repeatCount < previousCount || (repeatCount === previousCount && !repeatEnd)) {
+          return;
+        }
+
+        deltaCount = Math.max(0, repeatCount - previousCount);
+        if (deltaCount === 0 && repeatEnd) {
+          isStreakCompletionOnly = true;
+        }
+
         if (repeatEnd) {
           this.processedStreakTotals.delete(streakKey);
+          this.completedStreakTotals.set(streakKey, repeatCount);
+          if (this.completedStreakTotals.size > 2000) {
+            const firstKey = this.completedStreakTotals.keys().next().value;
+            if (firstKey) this.completedStreakTotals.delete(firstKey);
+          }
         } else {
           this.processedStreakTotals.set(streakKey, repeatCount);
         }
       }
 
       const event: TikTokNormalizedEvent = {
-        eventId: rawMsgId || `gift-${streakKey}-${repeatCount}-${now}`,
+        eventId: rawMsgId || `gift-${streakKey}-${repeatCount}-${repeatEnd ? 'end' : 'step'}-${now}`,
         type: 'gift',
         userId,
         username,
@@ -311,10 +352,14 @@ export class TikTokLiveAdapter {
         avatarUrl,
         giftId,
         giftName,
+        giftPictureUrl,
         giftCount: deltaCount,
+        totalStreakCount: repeatCount,
+        giftType,
         diamondCount,
         repeatEnd,
         streakKey,
+        isStreakCompletionOnly,
         verifiedBackend: true,
         isDemo: false,
         timestamp: now,
@@ -413,24 +458,66 @@ export class TikTokLiveAdapter {
       comment = filtered;
     }
 
+    const normalizedGiftId =
+      payload.giftId !== undefined ? normalizeGiftId(payload.giftId) : undefined;
+    if (payload.type === 'gift' && !normalizedGiftId) {
+      return null;
+    }
+
+    let giftCount =
+      payload.giftCount !== undefined ? Math.max(0, Math.round(Number(payload.giftCount))) : undefined;
+    let totalStreakCount =
+      payload.totalStreakCount !== undefined
+        ? Math.max(1, Math.round(Number(payload.totalStreakCount)))
+        : giftCount;
+    let isStreakCompletionOnly = Boolean(payload.isStreakCompletionOnly);
+
+    // Apply streak delta deduplication if a streakKey + giftType===1 is sent via webhook or demo broadcast
+    if (payload.type === 'gift' && payload.giftType === 1 && payload.streakKey && totalStreakCount) {
+      const sk = String(payload.streakKey);
+      const completedMax = this.completedStreakTotals.get(sk);
+      if (completedMax !== undefined && totalStreakCount <= completedMax) {
+        return null;
+      }
+      const prev = this.processedStreakTotals.get(sk) || 0;
+      const repEnd = Boolean(payload.repeatEnd);
+      if (totalStreakCount < prev || (totalStreakCount === prev && !repEnd)) {
+        return null;
+      }
+      giftCount = Math.max(0, totalStreakCount - prev);
+      if (giftCount === 0 && repEnd) {
+        isStreakCompletionOnly = true;
+      }
+      if (repEnd) {
+        this.processedStreakTotals.delete(sk);
+        this.completedStreakTotals.set(sk, totalStreakCount);
+      } else {
+        this.processedStreakTotals.set(sk, totalStreakCount);
+      }
+    }
+
     const normalized: TikTokNormalizedEvent = {
-      eventId: String(payload.eventId || `ext-${payload.type}-${payload.userId}-${now}`),
+      eventId: String(payload.eventId || `ext-${payload.type}-${payload.userId}-${now}-${Math.random().toString(36).slice(2, 6)}`),
       type: payload.type,
       userId: String(payload.userId),
       username: String(payload.username).replace(/^@+/, ''),
       nickname: payload.nickname ? String(payload.nickname) : String(payload.username),
       avatarUrl: payload.avatarUrl,
       comment,
-      giftId: payload.giftId !== undefined ? Number(payload.giftId) : undefined,
+      giftId: normalizedGiftId,
       giftName: payload.giftName,
-      giftCount: payload.giftCount !== undefined ? Math.max(1, Number(payload.giftCount)) : undefined,
+      giftPictureUrl: payload.giftPictureUrl,
+      giftCount,
+      totalStreakCount,
+      giftType: payload.giftType,
       diamondCount: payload.diamondCount !== undefined ? Number(payload.diamondCount) : undefined,
       repeatEnd: payload.repeatEnd,
       streakKey: payload.streakKey,
+      isStreakCompletionOnly,
       likeCount: payload.likeCount !== undefined ? Number(payload.likeCount) : undefined,
       cumulativeUserLikes:
         payload.cumulativeUserLikes !== undefined ? Number(payload.cumulativeUserLikes) : undefined,
-      verifiedBackend: !payload.isDemo,
+      verifiedBackend: true,
       isDemo: Boolean(payload.isDemo),
       timestamp: payload.timestamp || now,
     };

@@ -4,30 +4,46 @@ import {
   ActiveWoodenFishAction,
   AltarStationId,
   AnnouncementPriority,
+  CommentVoiceTemplates,
   DEFAULT_GIFT_MAPPINGS,
   FeedNotification,
+  GiftCalculationLogEntry,
+  GiftCeremonyQueueItemSnapshot,
+  GiftCharacterAnimType,
   GiftEffectType,
   GiftMapping,
+  GiftSoundEffectType,
   LotusCeremonyBadge,
+  MeritLedgerEntry,
   Participant,
   RitualActionType,
   TikTokNormalizedEvent,
   WoodenFishMilestoneTier,
+  getRitualDisplayNameVi,
+  normalizeGiftId,
+  renderGiftVoiceTemplate,
 } from '../types/temple';
 import {
   ALTAR_STATIONS,
   SeatManager,
+  TOTAL_MAIN_MATS,
   areAltarStationsTooClose,
   getCandidateStationsForRitual,
   getSeatPosition,
 } from './SeatManager';
-import { buildSacredAvatarDataUri } from './DemoEventManager';
+import { giftRegistry } from './GiftRegistry';
 import { soundSynthesizer } from './SoundSynthesizer';
-import { voiceManager } from './VoiceManager';
+import {
+  formatCommentSpeechFormula,
+  normalizeSpeechUsername,
+  voiceManager,
+} from './VoiceManager';
+
+type PrayerTemplateKey = keyof Omit<CommentVoiceTemplates, 'general'>;
 
 interface PrayerTopicMatch {
   topicLabel: string;
-  spokenBlessing: (name: string) => string;
+  templateKey: PrayerTemplateKey;
 }
 
 const PRAYER_TOPIC_MATCHERS: { regex: RegExp; match: PrayerTopicMatch }[] = [
@@ -35,56 +51,49 @@ const PRAYER_TOPIC_MATCHERS: { regex: RegExp; match: PrayerTopicMatch }[] = [
     regex: /bình\s*an/i,
     match: {
       topicLabel: 'Cầu Bình An',
-      spokenBlessing: (name) =>
-        `Nam mô A Di Đà Phật. Nguyện cầu cho Phật tử ${name} cùng gia quyến thân tâm thường bình an.`,
+      templateKey: 'binhAn',
     },
   },
   {
     regex: /sức\s*khỏe|mạnh\s*khỏe/i,
     match: {
       topicLabel: 'Cầu Sức Khỏe',
-      spokenBlessing: (name) =>
-        `Nam mô Dược Sư Lưu Ly Quang Vương Phật. Cầu chúc Phật tử ${name} và gia đình dồi dào sức khỏe.`,
+      templateKey: 'sucKhoe',
     },
   },
   {
-    regex: /tài\s*lộc|may\s*mắn|công\s*việc|lộc/i,
+    regex: /tài\s*lộc|may\s*mắn|công\s*việc|thuận\s*lợi/i,
     match: {
       topicLabel: 'Cầu Tài Lộc',
-      spokenBlessing: (name) =>
-        `Nguyện cầu Phật tử ${name} công việc hanh thông, phước lộc cát tường như ý.`,
+      templateKey: 'taiLoc',
     },
   },
   {
     regex: /tình\s*duyên|nhân\s*duyên|hạnh\s*phúc/i,
     match: {
       topicLabel: 'Cầu Tình Duyên',
-      spokenBlessing: (name) =>
-        `Nguyện cầu Phật tử ${name} nhân duyên thiện lành, trọn vẹn yêu thương và an vui.`,
+      templateKey: 'tinhDuyen',
     },
   },
   {
     regex: /học\s*hành|thi\s*cử|đỗ\s*đạt/i,
     match: {
       topicLabel: 'Cầu Học Hành',
-      spokenBlessing: (name) =>
-        `Nguyện cầu Phật tử ${name} trí tuệ sáng suốt, học hành tinh tấn, thi cử đỗ đạt.`,
+      templateKey: 'hocHanh',
     },
   },
   {
     regex: /gia\s*đạo|gia\s*đình|cha\s*mẹ|ông\s*bà/i,
     match: {
       topicLabel: 'Cầu Gia Đạo',
-      spokenBlessing: (name) =>
-        `Nguyện cầu gia đạo của Phật tử ${name} luôn thuận hòa, hiếu nghĩa và ngập tràn bình an.`,
+      templateKey: 'giaDao',
     },
   },
   {
     regex: /(nam\s*mô|a\s*di\s*đà\s*phật|lạy\s*phật|mô\s*phật|thích\s*ca|quan\s*âm|cầu\s*nguyện)/i,
     match: {
       topicLabel: 'Thành Tâm Lễ Phật',
-      spokenBlessing: (name) =>
-        `Nam mô A Di Đà Phật. Chứng giám lòng thành lễ Phật của Phật tử ${name}.`,
+      templateKey: 'binhAn',
     },
   },
 ];
@@ -113,14 +122,22 @@ function hashStringToFloat(str: string): number {
 interface QueuedAltarRitual {
   id: string;
   userId: string;
+  giftId?: string;
+  giftName?: string;
   type: RitualActionType;
+  characterAnimation?: GiftCharacterAnimType;
+  customEffect?: GiftEffectType;
+  customSound?: GiftSoundEffectType;
+  awardedPoints?: number;
+  isDemo?: boolean;
   label: string;
   ceremonyBadgeTitle: string;
   offeringLabel: string;
   spokenText?: string;
   playBellBeforeSpeech?: boolean;
   isLargeCeremony?: boolean;
-  priority: number; // lower = higher priority (1 = pagoda/grand, 2 = lotus/fruit/bell/flower/lantern, 3 = incense)
+  isGiftCeremony?: boolean;
+  priority: number; // lower = higher priority
   durationMs: number;
   createdAt: number;
 }
@@ -137,13 +154,18 @@ const RITUAL_PRIORITY: Record<RitualActionType, number> = {
   altar_pagoda: 1,
   altar_grand_ceremony: 1,
   altar_lotus_pedestal: 2,
+  glowing_lotus: 2,
+  golden_light: 2,
   altar_fruit_tray: 2,
   altar_bell: 2,
   altar_flower: 3,
+  altar_pray_clasped: 3,
+  altar_wooden_fish: 3,
   altar_lantern: 3,
   altar_incense: 4,
   seat_prayer: 5,
   seat_wooden_fish: 6,
+  no_animation: 6,
 };
 
 const MILESTONE_RANK: Record<WoodenFishMilestoneTier, number> = {
@@ -153,12 +175,18 @@ const MILESTONE_RANK: Record<WoodenFishMilestoneTier, number> = {
 };
 
 export interface TempleCongregationState {
-  participants: Participant[];
-  leaderboard: Participant[];
+  participants: Participant[]; // Active 3D characters rendered in the temple scene
+  activeParticipantCount: number; // Total active participants currently in the temple
+  departingCount: number;
+  sessionMeritUsersCount: number; // Total session users stored in MeritLedger (including departed)
+  departedUsersCount: number;
+  leaderboard: MeritLedgerEntry[]; // Session-persistent merit leaderboard (preserved after 120s leave!)
   notifications: FeedNotification[];
   activeEffects: ActiveGiftVisualEffect[];
   activeLotusBadges: LotusCeremonyBadge[];
   giftEventCounts: Record<string, number>;
+  ceremonyQueueInspector: GiftCeremonyQueueItemSnapshot[];
+  recentGiftLogs: GiftCalculationLogEntry[];
   prominentGiftBanner: {
     id: string;
     username: string;
@@ -180,6 +208,8 @@ export interface TempleCongregationState {
   queuedAltarCount: number;
   occupiedMainSeats: number;
   waitingOverflowCount: number;
+  effectiveTimeoutSec: number;
+  inactivityTimeoutEnabled: boolean;
   totalEventsProcessed: number;
 }
 
@@ -187,11 +217,17 @@ type CongregationSubscriber = (state: TempleCongregationState) => void;
 
 export class TikTokEventManager {
   private static readonly MAX_LOTUS_BADGES = 4;
+  private static readonly DEMO_ACCELERATED_TIMEOUT_SEC = 12;
 
+  // Active 3D participants currently inside the temple hall
   private participantsMap = new Map<string, Participant>();
+  // Session-persistent merit & gift history ledger (NOT deleted when inactive users depart!)
+  private meritLedger = new Map<string, MeritLedgerEntry>();
+
   private seatManager = new SeatManager();
   private giftMappings: GiftMapping[] = [...DEFAULT_GIFT_MAPPINGS];
   private giftEventCounts: Record<string, number> = {};
+  private recentGiftLogs: GiftCalculationLogEntry[] = [];
   private notifications: FeedNotification[] = [];
   private activeEffects: ActiveGiftVisualEffect[] = [];
   private activeLotusBadges: LotusCeremonyBadge[] = [];
@@ -221,12 +257,21 @@ export class TikTokEventManager {
   private arrivedRitualIds = new Set<string>();
   private lotusBadgeSideFlip = 0;
 
+  // Automatic 120-Second Inactivity Timeout State
+  private inactivityTimeoutEnabled = true;
+  private inactivityTimeoutSec = 120; // Production default: 120 seconds
+  private demoAcceleratedTimeout = false;
+  private departureSafetyTimers = new Map<string, number>(); // userId -> timeoutId
+  private totalDepartedCount = 0;
+
   private totalEventsProcessed = 0;
   private maxParticipants = 200;
   private effectsEnabled = true;
 
   private processedEventIds = new Set<string>();
   private clientStreakCounts = new Map<string, number>();
+  private completedClientStreaks = new Map<string, { finalCount: number; expiresAt: number }>();
+  private lastGiftExecutionByKey = new Map<string, number>();
   private userCommentRateMap = new Map<string, number>();
   private userFollowRateMap = new Map<string, number>();
   private userShareRateMap = new Map<string, number>();
@@ -235,14 +280,21 @@ export class TikTokEventManager {
   private batchNotifyScheduled = false;
 
   constructor() {
+    this.giftMappings = giftRegistry.getAllGifts();
     this.initGiftCounters();
+
+    giftRegistry.subscribe((snap) => {
+      this.giftMappings = snap.gifts;
+      this.initGiftCounters();
+      this.scheduleNotify();
+    });
 
     if (typeof window !== 'undefined') {
       window.handleTikTokEvent = (rawEvent: Partial<TikTokNormalizedEvent>) => {
         this.processEvent(rawEvent);
       };
 
-      // Periodic cleanup of expired effects, lotus avatar badges, and queued ceremonies/milestones
+      // Fast visual cleanup & ceremony queue dispatcher (400ms)
       window.setInterval(() => {
         const now = Date.now();
         let changed = false;
@@ -262,7 +314,14 @@ export class TikTokEventManager {
           changed = true;
         }
 
+        if (this.notifications.some((n) => now - n.timestamp > 4500)) {
+          this.notifications = this.notifications.filter((n) => now - n.timestamp <= 4500);
+          changed = true;
+        }
+
         for (const p of this.participantsMap.values()) {
+          if (p.isDeparting) continue;
+
           if (
             p.ritualStatusUntil &&
             now > p.ritualStatusUntil &&
@@ -273,7 +332,7 @@ export class TikTokEventManager {
             p.ritualStatusUntil = undefined;
             changed = true;
           }
-          // Dispatch any waiting wooden-fish milestone once user is seated and free
+
           if (!p.activeRitual && !p.activeWoodenFish && this.pendingWoodenFishMap.has(p.userId)) {
             if (this.tryStartQueuedWoodenFish(p.userId)) {
               changed = true;
@@ -290,13 +349,256 @@ export class TikTokEventManager {
           this.scheduleNotify();
         }
       }, 400);
+
+      // Centralized Periodic Inactivity Sweep (every 1.5 seconds — zero per-user timers!)
+      window.setInterval(() => {
+        if (!this.inactivityTimeoutEnabled) return;
+        const initiated = this.sweepInactiveParticipants(Date.now());
+        if (initiated > 0) {
+          this.scheduleNotify();
+        }
+      }, 1500);
+    }
+  }
+
+  public getEffectiveTimeoutMs(): number {
+    const sec = this.demoAcceleratedTimeout
+      ? TikTokEventManager.DEMO_ACCELERATED_TIMEOUT_SEC
+      : Math.max(15, this.inactivityTimeoutSec);
+    return sec * 1000;
+  }
+
+  public setInactivitySettings(params: {
+    enabled: boolean;
+    timeoutSec: number;
+    demoAccelerated: boolean;
+  }): void {
+    this.inactivityTimeoutEnabled = params.enabled;
+    this.inactivityTimeoutSec = Math.max(15, Math.min(3600, Math.round(params.timeoutSec || 120)));
+    this.demoAcceleratedTimeout = Boolean(params.demoAccelerated);
+
+    if (this.inactivityTimeoutEnabled) {
+      this.sweepInactiveParticipants(Date.now());
+    }
+    this.scheduleNotify();
+  }
+
+  /**
+   * Centralized inactivity sweep:
+   * - Checks independent lastInteractionAt timestamps.
+   * - Defers departure safely if user is currently performing or queued for an altar ritual / Gõ Mõ milestone.
+   */
+  public sweepInactiveParticipants(now = Date.now(), customThresholdMs?: number): number {
+    const thresholdMs = customThresholdMs ?? this.getEffectiveTimeoutMs();
+    let count = 0;
+
+    for (const p of this.participantsMap.values()) {
+      if (p.isDeparting) continue;
+      if (now - p.lastInteractionAt < thresholdMs) continue;
+
+      // Defer departure safely if performing an altar ritual, queued for an altar ritual, or finishing Gõ Mõ
+      const hasQueuedRitual = this.ritualQueue.some((q) => q.userId === p.userId);
+      if (p.activeRitual || p.activeWoodenFish || hasQueuedRitual) {
+        continue;
+      }
+
+      this.initiateParticipantDeparture(p, now);
+      count += 1;
+    }
+
+    return count;
+  }
+
+  /**
+   * Manual Admin Action: Remove inactive participants immediately.
+   * First sweeps anyone past effective timeout; if none are past full timeout yet,
+   * gracefully departs idle seated participants who haven't interacted in >= 5s (excluding active ceremony actors).
+   */
+  public removeInactiveParticipantsManual(): number {
+    const now = Date.now();
+    let departed = this.sweepInactiveParticipants(now);
+    if (departed === 0) {
+      departed = this.sweepInactiveParticipants(now, 5000);
+    }
+    if (departed === 0) {
+      departed = this.sweepInactiveParticipants(now, 0);
+    }
+    if (departed > 0) {
+      this.scheduleNotify();
+    }
+    return departed;
+  }
+
+  private initiateParticipantDeparture(p: Participant, now: number): void {
+    if (p.isDeparting) return;
+
+    // Clear any stale pending wooden-fish milestone
+    this.pendingWoodenFishMap.delete(p.userId);
+
+    p.isDeparting = true;
+    p.departingStartedAt = now;
+    p.animState = 'departing_standing';
+    p.animStateStartedAt = now;
+    p.ritualStatusLabel = 'Cáo lễ rời chánh điện';
+    p.ritualStatusUntil = now + 7500;
+    p.lastComment = undefined;
+    p.lastCommentAt = undefined;
+
+    // Safety fallback timer so off-screen/overflow characters or throttled tabs always complete removal
+    if (typeof window !== 'undefined') {
+      const prevTimer = this.departureSafetyTimers.get(p.userId);
+      if (prevTimer !== undefined) window.clearTimeout(prevTimer);
+
+      const isOverflowNotRendered = p.seatIndex >= TOTAL_MAIN_MATS;
+      const fallbackMs = isOverflowNotRendered ? 600 : 9000;
+      const timerId = window.setTimeout(() => {
+        this.finalizeParticipantDeparture(p.userId);
+      }, fallbackMs);
+      this.departureSafetyTimers.set(p.userId, timerId);
+    }
+  }
+
+  private cancelParticipantDeparture(p: Participant, now: number): void {
+    if (!p.isDeparting) return;
+    p.isDeparting = false;
+    p.departingStartedAt = undefined;
+    p.ritualStatusLabel = undefined;
+    p.ritualStatusUntil = undefined;
+    p.lastInteractionAt = now;
+    p.lastActivityAt = now;
+
+    const timerId = this.departureSafetyTimers.get(p.userId);
+    if (timerId !== undefined && typeof window !== 'undefined') {
+      window.clearTimeout(timerId);
+    }
+    this.departureSafetyTimers.delete(p.userId);
+
+    // Walk back cleanly to their still-reserved seat!
+    if (!p.activeRitual) {
+      p.animState = 'returning_from_altar';
+      p.animStateStartedAt = now;
+    }
+
+    const ledger = this.meritLedger.get(p.userId);
+    if (ledger) {
+      ledger.isActiveInScene = true;
+      ledger.lastInteractionAt = now;
+    }
+  }
+
+  /**
+   * Called by WorshipperCharacter when the departing character reaches the temple exit
+   * and finishes their short farewell bow (or by the safety fallback timer).
+   * Removes character ONLY from the active 3D scene & releases their seat while preserving MeritLedger!
+   */
+  public finalizeParticipantDeparture(userId: string): void {
+    const timerId = this.departureSafetyTimers.get(userId);
+    if (timerId !== undefined && typeof window !== 'undefined') {
+      window.clearTimeout(timerId);
+    }
+    this.departureSafetyTimers.delete(userId);
+
+    const p = this.participantsMap.get(userId);
+    if (!p || !p.isDeparting) return;
+
+    // Release any occupied altar station just in case
+    for (const [stId, ownerId] of this.occupiedStations.entries()) {
+      if (ownerId === userId) {
+        this.occupiedStations.delete(stId);
+      }
+    }
+
+    // Remove from active 3D registry & release seat for future worshippers
+    this.participantsMap.delete(userId);
+    this.seatManager.releaseUserSeat(userId);
+    this.pendingWoodenFishMap.delete(userId);
+    this.ritualQueue = this.ritualQueue.filter((q) => q.userId !== userId);
+    this.totalDepartedCount += 1;
+
+    // Preserve accumulated merit points & gift history in MeritLedger!
+    const ledger = this.meritLedger.get(userId);
+    if (ledger) {
+      ledger.isActiveInScene = false;
+      ledger.points = Math.max(ledger.points, p.points);
+      ledger.giftCount = Math.max(ledger.giftCount, p.giftCount);
+      ledger.commentCount = Math.max(ledger.commentCount, p.commentCount);
+      ledger.totalLikes = Math.max(ledger.totalLikes, p.totalLikes);
+      ledger.woodenFishStrikes = Math.max(ledger.woodenFishStrikes, p.woodenFishStrikes);
+    }
+
+    // Promote an overflow waiting worshipper (>= 200) into the newly freed main seat if available!
+    this.promoteWaitingParticipantIfMainSeatFree();
+
+    this.scheduleNotify();
+  }
+
+  private promoteWaitingParticipantIfMainSeatFree(): void {
+    if (this.seatManager.getOccupiedMainCount() >= TOTAL_MAIN_MATS) return;
+    for (const p of this.participantsMap.values()) {
+      if (
+        p.seatIndex >= TOTAL_MAIN_MATS &&
+        !p.isDeparting &&
+        !p.activeRitual &&
+        !p.activeWoodenFish
+      ) {
+        this.seatManager.releaseUserSeat(p.userId);
+        const { seatIndex, laneOffset } = this.seatManager.assignSeatForUser(p.userId);
+        p.seatIndex = seatIndex;
+        p.laneOffset = laneOffset;
+        p.animState = 'walking_aisle';
+        p.animStateStartedAt = Date.now();
+        break;
+      }
+    }
+  }
+
+  private syncParticipantToLedger(p: Participant): void {
+    const existing = this.meritLedger.get(p.userId);
+    if (existing) {
+      existing.username = p.username;
+      existing.nickname = p.nickname;
+      if (p.avatarUrl) existing.avatarUrl = p.avatarUrl;
+      existing.points = p.points;
+      existing.giftCount = p.giftCount;
+      existing.commentCount = p.commentCount;
+      existing.totalLikes = p.totalLikes;
+      existing.woodenFishStrikes = p.woodenFishStrikes;
+      existing.lastGiftName = p.lastGiftName;
+      existing.lastGiftAt = p.lastGiftAt;
+      existing.lastInteractionAt = p.lastInteractionAt;
+      existing.isActiveInScene = !p.isDeparting;
+      existing.isDemo = p.isDemo;
+    } else {
+      this.meritLedger.set(p.userId, {
+        userId: p.userId,
+        username: p.username,
+        nickname: p.nickname,
+        avatarUrl: p.avatarUrl,
+        points: p.points,
+        giftCount: p.giftCount,
+        commentCount: p.commentCount,
+        totalLikes: p.totalLikes,
+        woodenFishStrikes: p.woodenFishStrikes,
+        lastGiftName: p.lastGiftName,
+        lastGiftAt: p.lastGiftAt,
+        firstSeenAt: p.lastInteractionAt,
+        lastInteractionAt: p.lastInteractionAt,
+        isActiveInScene: true,
+        isDemo: p.isDemo,
+      });
     }
   }
 
   private initGiftCounters(): void {
-    const next: Record<string, number> = {};
+    const next: Record<string, number> = { ...this.giftEventCounts };
     for (const m of this.giftMappings) {
-      next[m.id] = this.giftEventCounts[m.id] ?? 0;
+      const gid = normalizeGiftId(m.giftId);
+      if (gid && next[gid] === undefined) {
+        next[gid] = next[m.id] ?? 0;
+      }
+      if (m.id && next[m.id] === undefined) {
+        next[m.id] = gid ? next[gid] ?? 0 : 0;
+      }
     }
     this.giftEventCounts = next;
   }
@@ -309,16 +611,17 @@ export class TikTokEventManager {
 
   public setGiftMappings(mappings: GiftMapping[]): void {
     this.giftMappings = mappings;
+    giftRegistry.setGiftsLocal(mappings);
     this.initGiftCounters();
     this.scheduleNotify();
   }
 
   public getGiftMappings(): GiftMapping[] {
-    return this.giftMappings;
+    return giftRegistry.getAllGifts();
   }
 
   public setMaxParticipants(max: number): void {
-    this.maxParticipants = Math.max(10, Math.min(300, max));
+    this.maxParticipants = Math.max(10, Math.min(240, max));
     this.scheduleNotify();
   }
 
@@ -337,30 +640,32 @@ export class TikTokEventManager {
     }
   }
 
-  public clearParticipants(): void {
+  /**
+   * Full session reset (used by "Xóa toàn bộ" / "Đặt lại Demo")
+   */
+  public clearParticipants(clearMeritHistory = true): void {
     for (const timer of this.ritualSafetyTimers.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timer);
     }
     for (const timer of this.woodenFishSafetyTimers.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timer);
     }
+    for (const timer of this.departureSafetyTimers.values()) {
+      if (typeof window !== 'undefined') window.clearTimeout(timer);
+    }
     this.ritualSafetyTimers.clear();
     this.woodenFishSafetyTimers.clear();
+    this.departureSafetyTimers.clear();
     this.arrivedRitualIds.clear();
     this.ritualQueue = [];
     this.occupiedStations.clear();
     this.pendingWoodenFishMap.clear();
-    this.userCumulativeLikes.clear();
-    this.userLastLike10Cooldown.clear();
-    this.clientStreakCounts.clear();
     this.participantsMap.clear();
     this.seatManager.resetAll();
     this.notifications = [];
     this.activeEffects = [];
     this.activeLotusBadges = [];
     this.prominentGiftBanner = null;
-    this.totalLikesCount = 0;
-    this.totalWoodenFishCount = 0;
     this.altarGlowUntil = 0;
     this.bellRingUntil = 0;
     this.incenseGlowUntil = 0;
@@ -368,9 +673,27 @@ export class TikTokEventManager {
     this.lotusGlowUntil = 0;
     this.pagodaGlowUntil = 0;
     this.floatingLanternCount = 6;
-    for (const k of Object.keys(this.giftEventCounts)) {
-      this.giftEventCounts[k] = 0;
+
+    if (clearMeritHistory) {
+      this.meritLedger.clear();
+      this.userCumulativeLikes.clear();
+      this.userLastLike10Cooldown.clear();
+      this.clientStreakCounts.clear();
+      this.completedClientStreaks.clear();
+      this.lastGiftExecutionByKey.clear();
+      this.recentGiftLogs = [];
+      this.totalLikesCount = 0;
+      this.totalWoodenFishCount = 0;
+      this.totalDepartedCount = 0;
+      for (const k of Object.keys(this.giftEventCounts)) {
+        this.giftEventCounts[k] = 0;
+      }
+    } else {
+      for (const entry of this.meritLedger.values()) {
+        entry.isActiveInScene = false;
+      }
     }
+
     this.scheduleNotify();
   }
 
@@ -383,9 +706,8 @@ export class TikTokEventManager {
     this.ritualQueue = [];
     this.occupiedStations.clear();
 
-    const orderedIds = Array.from(this.participantsMap.values())
-      .sort((a, b) => b.points - a.points)
-      .map((p) => p.userId);
+    const activeUsers = Array.from(this.participantsMap.values()).filter((p) => !p.isDeparting);
+    const orderedIds = activeUsers.sort((a, b) => b.points - a.points).map((p) => p.userId);
 
     const newSeats = this.seatManager.reassignAllUsers(orderedIds);
     const now = Date.now();
@@ -421,21 +743,91 @@ export class TikTokEventManager {
   }
 
   public getSnapshot(): TempleCongregationState {
-    const all = Array.from(this.participantsMap.values());
-    const visibleParticipants = all.slice(0, this.maxParticipants);
-    const leaderboard = [...all]
+    const allActive = Array.from(this.participantsMap.values());
+    const mainCap = Math.min(TOTAL_MAIN_MATS, this.maxParticipants);
+
+    // Keep 3D scene strictly within optimized visible seat cap on M1 8GB,
+    // while ALWAYS including any overflow participant who is currently performing an altar ceremony!
+    const renderedParticipants: Participant[] = [];
+    let mainCount = 0;
+    let departingCount = 0;
+
+    for (let i = 0; i < allActive.length; i++) {
+      const p = allActive[i];
+      if (p.isDeparting) departingCount += 1;
+
+      if (p.seatIndex < TOTAL_MAIN_MATS) {
+        if (mainCount < mainCap || p.activeRitual || p.isDeparting) {
+          renderedParticipants.push(p);
+          mainCount += 1;
+        }
+      } else if (p.activeRitual) {
+        renderedParticipants.push(p);
+      }
+    }
+
+    // Leaderboard comes from session-persistent MeritLedger so departed users retain their rank & merit!
+    const leaderboard = Array.from(this.meritLedger.values())
+      .filter((entry) => entry.points > 0)
       .sort((a, b) =>
-        b.points !== a.points ? b.points - a.points : a.lastActivityAt - b.lastActivityAt,
+        b.points !== a.points ? b.points - a.points : a.firstSeenAt - b.firstSeenAt,
       )
-      .slice(0, 20);
+      .slice(0, 30);
+
+    const effectiveTimeoutSec = Math.round(this.getEffectiveTimeoutMs() / 1000);
+
+    // Build live ceremony queue inspector snapshot (active altar stations + pending queue)
+    const ceremonyQueueInspector: GiftCeremonyQueueItemSnapshot[] = [];
+    for (const p of allActive) {
+      if (p.activeRitual) {
+        ceremonyQueueInspector.push({
+          id: p.activeRitual.id,
+          userId: p.userId,
+          username: p.username,
+          giftId: p.activeRitual.giftId,
+          giftName: p.activeRitual.giftName || p.activeRitual.label,
+          ritualType: p.activeRitual.type,
+          ritualLabel: p.activeRitual.label,
+          stationId: p.activeRitual.stationId,
+          status: 'active_at_altar',
+          priority: RITUAL_PRIORITY[p.activeRitual.type] ?? 2,
+          durationMs: p.activeRitual.durationMs,
+          isDemo: Boolean(p.activeRitual.isDemo ?? p.isDemo),
+          timestamp: p.activeRitual.startedAt,
+        });
+      }
+    }
+    for (const q of this.ritualQueue) {
+      const qp = this.participantsMap.get(q.userId);
+      ceremonyQueueInspector.push({
+        id: q.id,
+        userId: q.userId,
+        username: qp?.username || q.userId,
+        giftId: q.giftId,
+        giftName: q.giftName || q.offeringLabel,
+        ritualType: q.type,
+        ritualLabel: q.label,
+        status: 'queued',
+        priority: q.priority,
+        durationMs: q.durationMs,
+        isDemo: Boolean(q.isDemo ?? qp?.isDemo),
+        timestamp: q.createdAt,
+      });
+    }
 
     return {
-      participants: visibleParticipants,
+      participants: renderedParticipants,
+      activeParticipantCount: allActive.length,
+      departingCount,
+      sessionMeritUsersCount: this.meritLedger.size,
+      departedUsersCount: this.totalDepartedCount,
       leaderboard,
       notifications: this.notifications,
       activeEffects: this.activeEffects,
       activeLotusBadges: this.activeLotusBadges,
       giftEventCounts: { ...this.giftEventCounts },
+      ceremonyQueueInspector,
+      recentGiftLogs: [...this.recentGiftLogs],
       prominentGiftBanner: this.prominentGiftBanner,
       altarGlowUntil: this.altarGlowUntil,
       bellRingUntil: this.bellRingUntil,
@@ -450,8 +842,30 @@ export class TikTokEventManager {
       queuedAltarCount: this.ritualQueue.length,
       occupiedMainSeats: this.seatManager.getOccupiedMainCount(),
       waitingOverflowCount: this.seatManager.getOverflowWaitingCount(),
+      effectiveTimeoutSec,
+      inactivityTimeoutEnabled: this.inactivityTimeoutEnabled,
       totalEventsProcessed: this.totalEventsProcessed,
     };
+  }
+
+  private pushEventNotification(params: {
+    kind: FeedNotification['kind'];
+    username: string;
+    message: string;
+    pointsDelta?: number;
+    isDemo: boolean;
+    now: number;
+  }): void {
+    const entry: FeedNotification = {
+      id: `notif-${params.kind}-${params.now}-${Math.random().toString(36).slice(2, 5)}`,
+      kind: params.kind,
+      username: params.username,
+      message: params.message,
+      pointsDelta: params.pointsDelta,
+      isDemo: params.isDemo,
+      timestamp: params.now,
+    };
+    this.notifications = [entry, ...this.notifications].slice(0, 2);
   }
 
   private addOrRefreshLotusBadge(params: {
@@ -465,8 +879,6 @@ export class TikTokEventManager {
     durationMs: number;
   }): void {
     const now = Date.now();
-    const avatar =
-      params.avatarUrl || buildSacredAvatarDataUri(params.userId, params.nickname || params.username);
 
     const existingIdx = this.activeLotusBadges.findIndex((b) => b.userId === params.userId);
     if (existingIdx !== -1) {
@@ -474,7 +886,6 @@ export class TikTokEventManager {
         ...this.activeLotusBadges[existingIdx],
         username: params.username,
         nickname: params.nickname,
-        avatarUrl: avatar,
         ceremonyTitle: params.ceremonyTitle,
         offeringLabel: params.offeringLabel,
         expiresAt: now + params.durationMs,
@@ -482,7 +893,6 @@ export class TikTokEventManager {
       return;
     }
 
-    // Balance badges neatly between left and right flanks so they stack max 2 per side
     const leftCount = this.activeLotusBadges.filter((b) => b.side === 'left').length;
     const rightCount = this.activeLotusBadges.filter((b) => b.side === 'right').length;
     let side: 'left' | 'right' =
@@ -495,7 +905,6 @@ export class TikTokEventManager {
       userId: params.userId,
       username: params.username,
       nickname: params.nickname,
-      avatarUrl: avatar,
       ceremonyTitle: params.ceremonyTitle,
       offeringLabel: params.offeringLabel,
       side,
@@ -507,9 +916,6 @@ export class TikTokEventManager {
     this.activeLotusBadges = next.slice(-TikTokEventManager.MAX_LOTUS_BADGES);
   }
 
-  /**
-   * Called by WorshipperCharacter on each synchronized downstroke of the wooden drum mallet (gõ mõ)!
-   */
   public recordWoodenFishStrike(
     userId: string,
     tier: WoodenFishMilestoneTier,
@@ -519,6 +925,7 @@ export class TikTokEventManager {
     const p = this.participantsMap.get(userId);
     if (p) {
       p.woodenFishStrikes += 1;
+      this.syncParticipantToLedger(p);
     }
 
     if (this.effectsEnabled) {
@@ -531,9 +938,6 @@ export class TikTokEventManager {
     this.scheduleNotify();
   }
 
-  /**
-   * Called by WorshipperCharacter when a seated wooden-fish milestone animation finishes
-   */
   public completeWoodenFishAction(userId: string, actionId: string): void {
     const safety = this.woodenFishSafetyTimers.get(actionId);
     if (safety !== undefined && typeof window !== 'undefined') {
@@ -541,28 +945,33 @@ export class TikTokEventManager {
     }
     this.woodenFishSafetyTimers.delete(actionId);
 
+    const now = Date.now();
     const p = this.participantsMap.get(userId);
     if (p && p.activeWoodenFish && p.activeWoodenFish.id === actionId) {
       p.activeWoodenFish = null;
-      if (!p.activeRitual) {
+      if (!p.activeRitual && !p.isDeparting) {
         p.animState = 'sitting';
-        p.animStateStartedAt = Date.now();
+        p.animStateStartedAt = now;
       }
     }
 
-    // Check if another milestone was queued while striking
-    this.tryStartQueuedWoodenFish(userId);
+    if (!this.tryStartQueuedWoodenFish(userId) && p && this.inactivityTimeoutEnabled) {
+      if (now - p.lastInteractionAt >= this.getEffectiveTimeoutMs() && !p.activeRitual) {
+        this.initiateParticipantDeparture(p, now);
+      }
+    }
+
     this.scheduleNotify();
   }
 
   private isParticipantReadyAtSeat(p: Participant, now: number): boolean {
-    if (p.activeRitual || p.activeWoodenFish) return false;
+    if (p.isDeparting || p.activeRitual || p.activeWoodenFish) return false;
     const isEntering =
       (p.animState === 'walking_aisle' ||
         p.animState === 'turning_row' ||
         p.animState === 'walking_row' ||
         p.animState === 'turning_altar') &&
-      now - p.animStateStartedAt < 6200;
+      now - p.animStateStartedAt < 5800;
     return !isEntering;
   }
 
@@ -576,7 +985,6 @@ export class TikTokEventManager {
 
     const existingPending = this.pendingWoodenFishMap.get(p.userId);
     if (existingPending && MILESTONE_RANK[existingPending.tier] > MILESTONE_RANK[tier]) {
-      // Keep higher-tier pending milestone
       existingPending.cumulativeLikes = p.totalLikes;
     } else {
       this.pendingWoodenFishMap.set(p.userId, {
@@ -596,7 +1004,7 @@ export class TikTokEventManager {
     if (!pending) return false;
 
     const p = this.participantsMap.get(userId);
-    if (!p) {
+    if (!p || p.isDeparting) {
       this.pendingWoodenFishMap.delete(userId);
       return false;
     }
@@ -623,7 +1031,6 @@ export class TikTokEventManager {
           : `Gõ mõ cầu an · ${pending.cumulativeLikes} ❤️`;
     p.ritualStatusUntil = now + pending.durationMs + 1400;
 
-    // Spawn synchronized visual particle effects for 100 and 1000 like milestones
     if (this.effectsEnabled) {
       if (pending.tier === 'like_100') {
         this.spawnEffect({
@@ -666,28 +1073,29 @@ export class TikTokEventManager {
           giftName: `Đại Lễ Gõ Mõ (${pending.cumulativeLikes} ❤️)`,
           points: 1000,
           isDemo: p.isDemo,
-          expiresAt: now + 5400,
+          expiresAt: now + 5000,
         };
       }
     }
 
-    // Use VieNeuTTS ONLY for important milestones (1000 likes), never for every like!
     if (pending.tier === 'like_1000') {
+      const spokenName = normalizeSpeechUsername(p.nickname || p.username);
       voiceManager.enqueue({
-        text: `Xin cảm ơn Phật tử ${p.nickname || p.username} đã thành tâm gõ mõ cầu an với một nghìn lượt thích. Kính chúc bạn và gia đình luôn an lành.`,
-        priority: AnnouncementPriority.MILESTONE,
-        category: 'milestone',
+        text: `Xin cảm ơn Phật tử ${spokenName} đã thành tâm gõ mõ cầu an với một nghìn lượt thích. Kính chúc bạn và gia đình luôn an lành.`,
+        priority: AnnouncementPriority.SPECIAL_RITUAL,
+        category: 'special_ritual',
+        userId: p.userId,
+        username: p.username,
+        isDemo: p.isDemo,
         dedupeKey: `like-1000:${p.userId}:${Math.floor(pending.cumulativeLikes / 1000)}`,
         playBellBeforeSpeech: false,
       });
     }
 
-    // Fallback safety timer in case character is outside maxParticipants render cap
-    const isRendered =
-      Array.from(this.participantsMap.keys()).indexOf(p.userId) < this.maxParticipants;
+    const isRendered = p.seatIndex < Math.min(TOTAL_MAIN_MATS, this.maxParticipants);
     if (!isRendered) {
       for (let s = 0; s < pending.strikeCount; s++) {
-        window.setTimeout(() => {
+        setTimeout(() => {
           this.recordWoodenFishStrike(p.userId, pending.tier, s);
         }, s * 420 + 180);
       }
@@ -703,9 +1111,6 @@ export class TikTokEventManager {
     return true;
   }
 
-  /**
-   * Called by WorshipperCharacter when a character physically arrives at their Altar Ritual Station
-   */
   public notifyAltarRitualArrived(userId: string, ritualId: string): void {
     if (this.arrivedRitualIds.has(ritualId)) return;
     this.arrivedRitualIds.add(ritualId);
@@ -716,9 +1121,84 @@ export class TikTokEventManager {
     const now = Date.now();
     const r = p.activeRitual;
 
+    // 1. Illuminate sanctuary altar glows based on ritual type
+    switch (r.type) {
+      case 'altar_incense':
+        this.incenseGlowUntil = Math.max(this.incenseGlowUntil, now + 6500);
+        break;
+      case 'altar_fruit_tray':
+        this.fruitGlowUntil = Math.max(this.fruitGlowUntil, now + 8000);
+        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5000);
+        break;
+      case 'altar_lotus_pedestal':
+      case 'glowing_lotus':
+        this.lotusGlowUntil = Math.max(this.lotusGlowUntil, now + 8500);
+        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 6500);
+        break;
+      case 'altar_lantern':
+        this.floatingLanternCount = Math.min(24, this.floatingLanternCount + 1);
+        break;
+      case 'altar_bell':
+        this.bellRingUntil = Math.max(this.bellRingUntil, now + 5600);
+        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 4800);
+        break;
+      case 'altar_pagoda':
+      case 'altar_grand_ceremony':
+        this.pagodaGlowUntil = Math.max(this.pagodaGlowUntil, now + 10000);
+        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 9000);
+        this.bellRingUntil = Math.max(this.bellRingUntil, now + 5600);
+        this.incenseGlowUntil = Math.max(this.incenseGlowUntil, now + 7500);
+        break;
+      default:
+        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5000);
+        break;
+    }
+
+    // 2. If this ritual came from a configured GiftMapping with customSound / customEffect, play exact configured settings!
+    if (r.customSound !== undefined || r.customEffect !== undefined) {
+      if (this.effectsEnabled) {
+        if (r.customSound && r.customSound !== 'none') {
+          soundSynthesizer.playConfiguredGiftSound(r.customSound, 0.85);
+        }
+        if (r.customEffect && r.customEffect !== 'none') {
+          const originX =
+            r.type === 'altar_incense'
+              ? 0
+              : r.type === 'altar_bell'
+                ? 4.15
+                : r.type === 'altar_grand_ceremony' || r.type === 'altar_pagoda'
+                  ? 0
+                  : r.targetX;
+          const originZ =
+            r.type === 'altar_incense'
+              ? -9.85
+              : r.type === 'altar_bell'
+                ? -9.55
+                : r.type === 'altar_grand_ceremony' || r.type === 'altar_pagoda'
+                  ? -9.1
+                  : r.targetZ - 0.35;
+          this.spawnEffect({
+            id: `arr-gift-${ritualId}`,
+            type: r.customEffect,
+            userId: p.userId,
+            username: p.username,
+            giftName: r.giftName || r.label,
+            points: r.awardedPoints || 50,
+            seatIndex: p.seatIndex,
+            originX,
+            originZ,
+            startedAt: now,
+            durationMs: Math.max(4500, r.durationMs + 800),
+          });
+        }
+      }
+      this.scheduleNotify();
+      return;
+    }
+
+    // 3. Built-in default social ceremonies (Follow = Thắp hương, Share = Hoa đăng)
     switch (r.type) {
       case 'altar_incense': {
-        this.incenseGlowUntil = Math.max(this.incenseGlowUntil, now + 6500);
         if (this.effectsEnabled) {
           soundSynthesizer.playIncenseChime(0.65);
           this.spawnEffect({
@@ -738,73 +1218,7 @@ export class TikTokEventManager {
         break;
       }
 
-      case 'altar_flower': {
-        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 4500);
-        if (this.effectsEnabled) {
-          soundSynthesizer.playOfferingChime(0.72);
-          this.spawnEffect({
-            id: `arr-flower-${ritualId}`,
-            type: 'lotus_petals',
-            userId: p.userId,
-            username: p.username,
-            giftName: 'Hoa Hồng Cầu An',
-            points: 50,
-            seatIndex: p.seatIndex,
-            originX: r.targetX,
-            originZ: r.targetZ - 0.35,
-            startedAt: now,
-            durationMs: 4500,
-          });
-        }
-        break;
-      }
-
-      case 'altar_fruit_tray': {
-        this.fruitGlowUntil = Math.max(this.fruitGlowUntil, now + 8000);
-        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5000);
-        if (this.effectsEnabled) {
-          soundSynthesizer.playOfferingChime(0.75);
-          this.spawnEffect({
-            id: `arr-fruit-${ritualId}`,
-            type: 'golden_particles',
-            userId: p.userId,
-            username: p.username,
-            giftName: 'Mâm Quả Cầu Gia Đạo',
-            points: 350,
-            seatIndex: p.seatIndex,
-            originX: r.targetX,
-            originZ: r.targetZ - 0.45,
-            startedAt: now,
-            durationMs: 4800,
-          });
-        }
-        break;
-      }
-
-      case 'altar_lotus_pedestal': {
-        this.lotusGlowUntil = Math.max(this.lotusGlowUntil, now + 8500);
-        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 6500);
-        if (this.effectsEnabled) {
-          soundSynthesizer.playLotusPedestalChime(0.78);
-          this.spawnEffect({
-            id: `arr-lotusped-${ritualId}`,
-            type: 'lotus_petals',
-            userId: p.userId,
-            username: p.username,
-            giftName: 'Đài Sen Cầu Tài Lộc',
-            points: 990,
-            seatIndex: p.seatIndex,
-            originX: r.targetX,
-            originZ: r.targetZ - 0.35,
-            startedAt: now,
-            durationMs: 5600,
-          });
-        }
-        break;
-      }
-
       case 'altar_lantern': {
-        this.floatingLanternCount = Math.min(24, this.floatingLanternCount + 1);
         if (this.effectsEnabled) {
           soundSynthesizer.playWaterLanternChime(0.72);
           this.spawnEffect({
@@ -824,64 +1238,30 @@ export class TikTokEventManager {
         break;
       }
 
-      case 'altar_bell': {
-        this.bellRingUntil = Math.max(this.bellRingUntil, now + 5600);
-        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 4800);
+      default: {
         if (this.effectsEnabled) {
-          soundSynthesizer.playTempleBell(0.92);
+          soundSynthesizer.playOfferingChime(0.7);
           this.spawnEffect({
-            id: `arr-bell-${ritualId}`,
-            type: 'bell_waves',
+            id: `arr-default-${ritualId}`,
+            type: 'lotus_petals',
             userId: p.userId,
             username: p.username,
-            giftName: 'Chuông Đồng Cầu Sức Khỏe',
-            points: 150,
+            giftName: r.label,
+            points: 50,
             seatIndex: p.seatIndex,
-            originX: 4.25,
-            originZ: -9.55,
+            originX: r.targetX,
+            originZ: r.targetZ - 0.35,
             startedAt: now,
-            durationMs: 5000,
+            durationMs: 4500,
           });
         }
         break;
       }
-
-      case 'altar_pagoda':
-      case 'altar_grand_ceremony': {
-        this.pagodaGlowUntil = Math.max(this.pagodaGlowUntil, now + 10000);
-        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 9000);
-        this.bellRingUntil = Math.max(this.bellRingUntil, now + 5600);
-        this.incenseGlowUntil = Math.max(this.incenseGlowUntil, now + 7500);
-        if (this.effectsEnabled) {
-          soundSynthesizer.playGrandCeremonyBell(0.95);
-          this.spawnEffect({
-            id: `arr-pagoda-${ritualId}`,
-            type: 'grand_ceremony',
-            userId: p.userId,
-            username: p.username,
-            giftName: 'Bảo Tháp Công Đức',
-            points: 1990,
-            seatIndex: p.seatIndex,
-            originX: 0,
-            originZ: -9.1,
-            startedAt: now,
-            durationMs: 7800,
-          });
-        }
-        break;
-      }
-
-      default:
-        break;
     }
 
     this.scheduleNotify();
   }
 
-  /**
-   * Called by WorshipperCharacter once the character has walked all the way back
-   * to their original reserved seat and resumed sitting.
-   */
   public completeCharacterRitual(userId: string, ritualId: string): void {
     const timer = this.ritualSafetyTimers.get(ritualId);
     if (timer !== undefined && typeof window !== 'undefined') {
@@ -897,10 +1277,9 @@ export class TikTokEventManager {
     }
 
     const now = Date.now();
-    // Fade the user's Floating Lotus Avatar badge gracefully 1.4s after ceremony completes
     const badge = this.activeLotusBadges.find((b) => b.userId === userId);
-    if (badge && badge.expiresAt > now + 1400) {
-      badge.expiresAt = now + 1400;
+    if (badge && badge.expiresAt > now + 1200) {
+      badge.expiresAt = now + 1200;
     }
 
     const p = this.participantsMap.get(userId);
@@ -912,42 +1291,71 @@ export class TikTokEventManager {
       p.animStateStartedAt = now;
     }
 
-    // If user accumulated a 10/100/1000 Like Gõ Mõ milestone while away at the altar, play it now!
-    this.tryStartQueuedWoodenFish(userId);
+    // Play any queued wooden-fish milestone, OR if their 120s inactivity timer expired during the ceremony
+    // (without any new interaction resetting lastInteractionAt), safely initiate their departure now!
+    const startedWoodenFish = this.tryStartQueuedWoodenFish(userId);
+    const hasMoreQueuedRituals = this.ritualQueue.some((q) => q.userId === userId);
+
+    if (
+      !startedWoodenFish &&
+      !hasMoreQueuedRituals &&
+      p &&
+      this.inactivityTimeoutEnabled &&
+      now - p.lastInteractionAt >= this.getEffectiveTimeoutMs()
+    ) {
+      this.initiateParticipantDeparture(p, now);
+    }
+
     this.tryDispatchQueuedRituals();
     this.scheduleNotify();
   }
 
   private enqueueAltarRitual(params: {
     userId: string;
+    giftId?: string;
+    giftName?: string;
     type: RitualActionType;
+    characterAnimation?: GiftCharacterAnimType;
+    customEffect?: GiftEffectType;
+    customSound?: GiftSoundEffectType;
+    awardedPoints?: number;
+    isDemo?: boolean;
     label: string;
     ceremonyBadgeTitle: string;
     offeringLabel: string;
     spokenText?: string;
     playBellBeforeSpeech?: boolean;
     isLargeCeremony?: boolean;
+    isGiftCeremony?: boolean;
+    priorityOverride?: number;
     durationMs?: number;
   }): void {
     const p = this.participantsMap.get(params.userId);
     if (!p) return;
 
-    const priority = RITUAL_PRIORITY[params.type] ?? 3;
+    const priority = params.priorityOverride ?? RITUAL_PRIORITY[params.type] ?? 3;
     const durationMs = params.durationMs ?? 4400;
     const existingIdx = this.ritualQueue.findIndex((q) => q.userId === params.userId);
 
-    // If user already has a queued ritual, upgrade if higher/equal priority so no duplicate trips spam
     if (existingIdx !== -1) {
       if (priority <= this.ritualQueue[existingIdx].priority) {
         this.ritualQueue[existingIdx] = {
           ...this.ritualQueue[existingIdx],
+          giftId: params.giftId ?? this.ritualQueue[existingIdx].giftId,
+          giftName: params.giftName ?? this.ritualQueue[existingIdx].giftName,
           type: params.type,
+          characterAnimation: params.characterAnimation,
+          customEffect: params.customEffect,
+          customSound: params.customSound,
+          awardedPoints: params.awardedPoints,
+          isDemo: params.isDemo,
           label: params.label,
           ceremonyBadgeTitle: params.ceremonyBadgeTitle,
           offeringLabel: params.offeringLabel,
           spokenText: params.spokenText ?? this.ritualQueue[existingIdx].spokenText,
           playBellBeforeSpeech: params.playBellBeforeSpeech,
           isLargeCeremony: params.isLargeCeremony,
+          isGiftCeremony: params.isGiftCeremony,
           priority,
           durationMs,
         };
@@ -959,13 +1367,21 @@ export class TikTokEventManager {
     this.ritualQueue.push({
       id: `ritual-${params.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       userId: params.userId,
+      giftId: params.giftId,
+      giftName: params.giftName,
       type: params.type,
+      characterAnimation: params.characterAnimation,
+      customEffect: params.customEffect,
+      customSound: params.customSound,
+      awardedPoints: params.awardedPoints,
+      isDemo: params.isDemo,
       label: params.label,
       ceremonyBadgeTitle: params.ceremonyBadgeTitle,
       offeringLabel: params.offeringLabel,
       spokenText: params.spokenText,
       playBellBeforeSpeech: params.playBellBeforeSpeech,
       isLargeCeremony: params.isLargeCeremony,
+      isGiftCeremony: params.isGiftCeremony,
       priority,
       durationMs,
       createdAt: Date.now(),
@@ -1009,24 +1425,32 @@ export class TikTokEventManager {
 
       const item = this.ritualQueue[i];
       const p = this.participantsMap.get(item.userId);
-      if (!p) {
+      if (!p || p.isDeparting) {
         this.ritualQueue.splice(i, 1);
         i--;
         continue;
       }
 
-      // Wait if character is already on an active altar trip OR still walking in from temple entrance to claim their seat
       if (p.activeRitual) continue;
-      const isStillEntering =
+
+      // For main-hall newly arrived characters, let them claim their seat first (except overflow gallery actors who walk straight in!)
+      const isMainHallStillEntering =
+        p.seatIndex < TOTAL_MAIN_MATS &&
         (p.animState === 'walking_aisle' ||
           p.animState === 'turning_row' ||
           p.animState === 'walking_row' ||
           p.animState === 'turning_altar') &&
-        now - p.animStateStartedAt < 4800;
-      if (isStillEntering) continue;
+        now - p.animStateStartedAt < 4200;
+      if (isMainHallStillEntering) continue;
 
       const seat = getSeatPosition(p.seatIndex);
-      const candidates = getCandidateStationsForRitual(item.type, seat.side);
+      const stationLookupType: RitualActionType =
+        item.characterAnimation === 'walk_ring_bell'
+          ? 'altar_bell'
+          : item.characterAnimation === 'walk_prostrate_3'
+            ? 'altar_grand_ceremony'
+            : item.type;
+      const candidates = getCandidateStationsForRitual(stationLookupType, seat.side);
       const chosenStationId = candidates.find((st) => this.isStationAvailable(st));
       if (!chosenStationId) continue;
 
@@ -1035,7 +1459,6 @@ export class TikTokEventManager {
       this.ritualQueue.splice(i, 1);
       i--;
 
-      // Clear any active seated wooden-fish pose cleanly before standing up
       if (p.activeWoodenFish) {
         const prevActId = p.activeWoodenFish.id;
         p.activeWoodenFish = null;
@@ -1044,13 +1467,20 @@ export class TikTokEventManager {
         this.woodenFishSafetyTimers.delete(prevActId);
       }
 
-      // Dedicated separate outbound (±0.44) and inbound return (±1.04) carpet lanes prevent aisle collisions
-      const outboundLaneX = seat.side === 'left' ? -0.44 : 0.44;
-      const returnLaneX = seat.side === 'left' ? -1.04 : 1.04;
+      // Dedicated separate outbound (±0.38) and inbound return (±0.84) carpet lanes prevent aisle collisions
+      const outboundLaneX = seat.side === 'left' ? -0.38 : 0.38;
+      const returnLaneX = seat.side === 'left' ? -0.84 : 0.84;
 
       const activeRitual: ActiveCharacterRitual = {
         id: item.id,
+        giftId: item.giftId,
+        giftName: item.giftName,
         type: item.type,
+        characterAnimation: item.characterAnimation,
+        customEffect: item.customEffect,
+        customSound: item.customSound,
+        awardedPoints: item.awardedPoints,
+        isDemo: item.isDemo,
         label: item.label,
         ceremonyBadgeTitle: item.ceremonyBadgeTitle,
         stationId: chosenStationId,
@@ -1070,7 +1500,6 @@ export class TikTokEventManager {
       p.animStateStartedAt = now;
       p.lastActivityAt = now;
 
-      // 3. FLOATING LOTUS AVATAR EFFECT: Display pink lotus badge linked to this real 3D character!
       this.addOrRefreshLotusBadge({
         userId: p.userId,
         username: p.username,
@@ -1079,28 +1508,29 @@ export class TikTokEventManager {
         ceremonyTitle: item.ceremonyBadgeTitle,
         offeringLabel: item.offeringLabel,
         preferredSide: seat.side,
-        durationMs: item.durationMs + 8500,
+        durationMs: item.durationMs + 8000,
       });
 
-      // 5. AUTOMATIC VIENEU VOICE: Announce when the ritual begins!
+      // Announce non-gift ceremonies (Follow/Share) when dispatched;
+      // Gift announcements are enqueued IMMEDIATELY upon gift receipt so they preempt ongoing comment TTS right away!
       const voiceSettings = voiceManager.getSettings();
-      if (item.spokenText && voiceSettings.giftAnnouncementsEnabled) {
+      if (item.spokenText && !item.isGiftCeremony && voiceSettings.followAnnouncementsEnabled) {
         voiceManager.enqueue({
           text: item.spokenText,
-          priority: item.isLargeCeremony
-            ? AnnouncementPriority.LARGE_GIFT
-            : AnnouncementPriority.NORMAL_GIFT,
-          category: item.isLargeCeremony ? 'large_gift' : 'gift',
+          priority: AnnouncementPriority.SPECIAL_RITUAL,
+          category: 'special_ritual',
+          userId: p.userId,
+          username: p.username,
+          isDemo: p.isDemo,
           dedupeKey: `ceremony:${p.userId}:${item.type}:${Math.floor(now / 5000)}`,
-          playBellBeforeSpeech: Boolean(item.playBellBeforeSpeech),
-          bypassRateLimit: Boolean(item.isLargeCeremony),
+          playBellBeforeSpeech: false,
         });
       }
 
       if (typeof window !== 'undefined') {
         const safetyId = window.setTimeout(() => {
           this.completeCharacterRitual(p.userId, activeRitual.id);
-        }, 23000);
+        }, 22000);
         this.ritualSafetyTimers.set(activeRitual.id, safetyId);
       }
 
@@ -1134,9 +1564,26 @@ export class TikTokEventManager {
     const nickname = raw.nickname ? String(raw.nickname).trim() : username;
     const isDemo = Boolean(raw.isDemo);
 
+    // Explicitly ignore TikTok join/leave room presence packets for activity/timeout proof!
+    if (raw.type === 'join' || raw.type === 'leave') {
+      return;
+    }
+
     this.totalEventsProcessed += 1;
 
-    // 1. FOLLOW => If user is already seated, walk to altar and THẮP HƯƠNG!
+    // Any genuine interaction (comment, gift, like, follow, share) immediately refreshes
+    // an active participant's 120s timer and cancels pending departure, even if UI rate-limited.
+    const activeExisting = this.participantsMap.get(userId);
+    if (activeExisting) {
+      if (activeExisting.isDeparting) {
+        this.cancelParticipantDeparture(activeExisting, now);
+      }
+      activeExisting.lastActivityAt = now;
+      activeExisting.lastInteractionAt = now;
+      this.syncParticipantToLedger(activeExisting);
+    }
+
+    // 1. FOLLOW => Resets 120s timer; if seated, walks to altar and THẮP HƯƠNG
     if (raw.type === 'follow') {
       const prevFollow = this.userFollowRateMap.get(userId) || 0;
       if (now - prevFollow < 4000) return;
@@ -1144,9 +1591,24 @@ export class TikTokEventManager {
 
       const existing = this.participantsMap.get(userId);
       if (existing) {
+        if (existing.isDeparting) {
+          this.cancelParticipantDeparture(existing, now);
+        }
         if (raw.avatarUrl) existing.avatarUrl = raw.avatarUrl;
         existing.points += 30;
         existing.lastActivityAt = now;
+        existing.lastInteractionAt = now;
+        this.syncParticipantToLedger(existing);
+
+        const spokenName = normalizeSpeechUsername(nickname || username);
+        this.pushEventNotification({
+          kind: 'follow',
+          username,
+          message: 'dâng hương cầu an',
+          pointsDelta: 30,
+          isDemo,
+          now,
+        });
         this.enqueueAltarRitual({
           userId,
           type: 'altar_incense',
@@ -1154,36 +1616,16 @@ export class TikTokEventManager {
           ceremonyBadgeTitle: 'DÂNG HƯƠNG CẦU AN',
           offeringLabel: 'Tâm Hương',
           spokenText: voiceManager.getSettings().followAnnouncementsEnabled
-            ? `Phật tử ${nickname} thành tâm dâng nén tâm hương cầu bình an.`
+            ? `Phật tử ${spokenName} thành tâm dâng nén tâm hương cầu bình an.`
             : undefined,
           durationMs: 4200,
-        });
-        this.pushNotification({
-          id: `notif-${eventId}`,
-          kind: 'follow',
-          username,
-          avatarUrl: existing.avatarUrl,
-          message: 'theo dõi & lên bàn thờ thắp hương',
-          pointsDelta: 30,
-          isDemo,
-          timestamp: now,
-        });
-      } else {
-        this.pushNotification({
-          id: `notif-${eventId}`,
-          kind: 'follow',
-          username,
-          avatarUrl: raw.avatarUrl,
-          message: 'đã theo dõi Chùa Online',
-          isDemo,
-          timestamp: now,
         });
       }
       this.scheduleNotify();
       return;
     }
 
-    // 2. SHARE => If user is already seated, walk to Lotus Basin and THẢ HOA ĐĂNG!
+    // 2. SHARE => Resets 120s timer; if seated, walks to Lotus Basin and THẢ HOA ĐĂNG
     if (raw.type === 'share') {
       const prevShare = this.userShareRateMap.get(userId) || 0;
       if (now - prevShare < 3500) return;
@@ -1191,27 +1633,32 @@ export class TikTokEventManager {
 
       const existing = this.participantsMap.get(userId);
       if (existing) {
+        if (existing.isDeparting) {
+          this.cancelParticipantDeparture(existing, now);
+        }
         if (raw.avatarUrl) existing.avatarUrl = raw.avatarUrl;
         existing.points += 40;
         existing.lastActivityAt = now;
+        existing.lastInteractionAt = now;
+        this.syncParticipantToLedger(existing);
+
+        const spokenName = normalizeSpeechUsername(nickname || username);
+        this.pushEventNotification({
+          kind: 'share',
+          username,
+          message: 'thả hoa đăng cầu an',
+          pointsDelta: 40,
+          isDemo,
+          now,
+        });
         this.enqueueAltarRitual({
           userId,
           type: 'altar_lantern',
           label: 'Thả hoa đăng',
           ceremonyBadgeTitle: 'THẢ HOA ĐĂNG CẦU AN',
           offeringLabel: 'Hoa Đăng',
-          spokenText: `Phật tử ${nickname} thả hoa đăng cầu nguyện ánh sáng từ bi và an lành.`,
+          spokenText: `Phật tử ${spokenName} thả hoa đăng cầu nguyện ánh sáng từ bi và an lành.`,
           durationMs: 4400,
-        });
-        this.pushNotification({
-          id: `notif-${eventId}`,
-          kind: 'share',
-          username,
-          avatarUrl: existing.avatarUrl,
-          message: 'chia sẻ phiên LIVE & thả hoa đăng cầu an',
-          pointsDelta: 40,
-          isDemo,
-          timestamp: now,
         });
         this.scheduleNotify();
       }
@@ -1219,9 +1666,9 @@ export class TikTokEventManager {
     }
 
     // 3. INTERACTIVE LIKE = GÕ MÕ SYSTEM
-    // - Identify using TikTok userId, award 1 merit point per new like, track cumulative likes per user.
-    // - Never create duplicate characters & never spawn new characters from likes alone.
-    // - Aggregate incoming likes, handle cumulativeUserLikes safely, and trigger 10 / 100 / 1000 milestones!
+    // - Resets existing user's 120s inactivity timer (canceling pending departure if needed).
+    // - Never creates characters from likes alone.
+    // - Aggregates repeated likes and awards 1 merit point per new like.
     if (raw.type === 'like') {
       const prevLikes = this.userCumulativeLikes.get(userId) || 0;
       let deltaLikes = 0;
@@ -1229,7 +1676,7 @@ export class TikTokEventManager {
       if (raw.cumulativeUserLikes !== undefined && Number.isFinite(raw.cumulativeUserLikes)) {
         const incomingTotal = Math.max(0, Math.floor(Number(raw.cumulativeUserLikes)));
         if (incomingTotal <= prevLikes) {
-          return; // Prevent duplicate cumulative packet rewards
+          return;
         }
         deltaLikes = incomingTotal - prevLikes;
       } else {
@@ -1242,60 +1689,41 @@ export class TikTokEventManager {
 
       const existing = this.participantsMap.get(userId);
       if (!existing) {
-        // Do NOT spawn new characters from likes alone; still update global ❤️ Tổng lượt thích!
+        // Also update MeritLedger if a previously departed user sends likes
+        const ledger = this.meritLedger.get(userId);
+        if (ledger) {
+          ledger.totalLikes = nextLikes;
+          ledger.points += deltaLikes;
+          ledger.lastInteractionAt = now;
+        }
         this.scheduleNotify();
         return;
       }
 
+      if (existing.isDeparting) {
+        this.cancelParticipantDeparture(existing, now);
+      }
+
       if (raw.avatarUrl) existing.avatarUrl = raw.avatarUrl;
       existing.totalLikes = nextLikes;
-      existing.points += deltaLikes; // 1 merit point per new like
+      existing.points += deltaLikes;
       existing.lastActivityAt = now;
+      existing.lastInteractionAt = now;
+      this.syncParticipantToLedger(existing);
 
-      // Determine highest crossed milestone between prevLikes -> nextLikes
       const crossed1000 = Math.floor(nextLikes / 1000) > Math.floor(prevLikes / 1000);
       const crossed100 = Math.floor(nextLikes / 100) > Math.floor(prevLikes / 100);
       const crossed10 = Math.floor(nextLikes / 10) > Math.floor(prevLikes / 10);
 
       if (crossed1000) {
         this.enqueueOrTriggerWoodenFishMilestone(existing, 'like_1000', now);
-        this.pushNotification({
-          id: `notif-${eventId}`,
-          kind: 'like',
-          username,
-          avatarUrl: existing.avatarUrl,
-          message: `đạt cột mốc ${nextLikes} ❤️ · Đại lễ Gõ Mõ Kim Liên!`,
-          pointsDelta: deltaLikes,
-          isDemo,
-          timestamp: now,
-        });
       } else if (crossed100) {
         this.enqueueOrTriggerWoodenFishMilestone(existing, 'like_100', now);
-        this.pushNotification({
-          id: `notif-${eventId}`,
-          kind: 'like',
-          username,
-          avatarUrl: existing.avatarUrl,
-          message: `đạt ${nextLikes} ❤️ · Gõ 3 tiếng mõ hào quang`,
-          pointsDelta: deltaLikes,
-          isDemo,
-          timestamp: now,
-        });
       } else if (crossed10) {
         const last10At = this.userLastLike10Cooldown.get(userId) || 0;
         if (now - last10At >= 1800) {
           this.userLastLike10Cooldown.set(userId, now);
           this.enqueueOrTriggerWoodenFishMilestone(existing, 'like_10', now);
-          this.pushNotification({
-            id: `notif-${eventId}`,
-            kind: 'like',
-            username,
-            avatarUrl: existing.avatarUrl,
-            message: `thả tim (${nextLikes} ❤️) · Gõ mõ cầu an`,
-            pointsDelta: deltaLikes,
-            isDemo,
-            timestamp: now,
-          });
         }
       }
 
@@ -1303,11 +1731,7 @@ export class TikTokEventManager {
       return;
     }
 
-    if (raw.type === 'join' || raw.type === 'leave') {
-      return;
-    }
-
-    // 4. COMMENT => First comment spawns & seats character; Prayer comments trigger respectful prayer!
+    // 4. COMMENT => Spawns/returns character, displays 5s bubble ONLY over their head, resets 120s timer, and queues VieNeu comment voice!
     if (raw.type === 'comment') {
       this.handleCommentEvent({
         eventId,
@@ -1322,23 +1746,60 @@ export class TikTokEventManager {
       return;
     }
 
-    // 5. GIFT => Finds existing character (or creates & assigns permanent seat) and queues the mapped ritual!
+    // 5. GIFT => Dynamic GiftRegistry lookup by normalized giftId string, streak-safe delta calculation,
+    //    custom VieNeuTTS template variables, and dynamic 3D ceremony execution!
     if (raw.type === 'gift') {
-      // Client-side streak safety deduplication if external webhook sends streakKey
-      let giftCount = Math.max(1, Math.round(Number(raw.giftCount || 1)));
-      if (raw.streakKey && !raw.verifiedBackend) {
-        const prevStreak = this.clientStreakCounts.get(raw.streakKey) || 0;
-        if (giftCount <= prevStreak) {
-          if (raw.repeatEnd) this.clientStreakCounts.delete(raw.streakKey);
+      const normalizedGiftId = normalizeGiftId(raw.giftId);
+      if (!normalizedGiftId) return;
+
+      const rawGiftName = String(raw.giftName || `Gift #${normalizedGiftId}`).trim();
+      const rawCount = Math.max(
+        raw.isStreakCompletionOnly ? 0 : 1,
+        Math.round(Number(raw.giftCount ?? 1)),
+      );
+      let deltaCount = rawCount;
+      let totalStreakCount = Math.max(rawCount, Math.round(Number(raw.totalStreakCount || rawCount)));
+      let isStreakCompletionOnly = Boolean(raw.isStreakCompletionOnly);
+      let prevStreakWasZero = true;
+
+      const isStreakable = Number(raw.giftType ?? 0) === 1 && Boolean(raw.streakKey);
+
+      if (isStreakable && raw.streakKey && !raw.verifiedBackend) {
+        const completedEntry = this.completedClientStreaks.get(raw.streakKey);
+        if (completedEntry && completedEntry.expiresAt > now && rawCount <= completedEntry.finalCount) {
           return;
         }
-        const delta = giftCount - prevStreak;
-        if (raw.repeatEnd) {
-          this.clientStreakCounts.delete(raw.streakKey);
+
+        const prevStreak = this.clientStreakCounts.get(raw.streakKey) || 0;
+        prevStreakWasZero = prevStreak === 0;
+        totalStreakCount = Math.max(prevStreak, rawCount);
+
+        if (rawCount <= prevStreak) {
+          if (raw.repeatEnd) {
+            this.clientStreakCounts.delete(raw.streakKey);
+            this.completedClientStreaks.set(raw.streakKey, {
+              finalCount: totalStreakCount,
+              expiresAt: now + 60000,
+            });
+            deltaCount = 0;
+            isStreakCompletionOnly = true;
+          } else {
+            return;
+          }
         } else {
-          this.clientStreakCounts.set(raw.streakKey, giftCount);
+          deltaCount = rawCount - prevStreak;
+          if (raw.repeatEnd) {
+            this.clientStreakCounts.delete(raw.streakKey);
+            this.completedClientStreaks.set(raw.streakKey, {
+              finalCount: totalStreakCount,
+              expiresAt: now + 60000,
+            });
+          } else {
+            this.clientStreakCounts.set(raw.streakKey, rawCount);
+          }
         }
-        giftCount = delta;
+      } else if (isStreakable && raw.verifiedBackend) {
+        prevStreakWasZero = totalStreakCount <= deltaCount && !isStreakCompletionOnly;
       }
 
       this.handleGiftEvent({
@@ -1347,16 +1808,28 @@ export class TikTokEventManager {
         username,
         nickname,
         avatarUrl: raw.avatarUrl,
-        giftId: Number(raw.giftId || 5655),
-        giftName: String(raw.giftName || 'Rose'),
-        giftCount,
-        diamondCount: Number(raw.diamondCount || 1),
+        giftId: normalizedGiftId,
+        giftName: rawGiftName,
+        giftPictureUrl: raw.giftPictureUrl,
+        deltaCount,
+        totalStreakCount,
+        isStreakable,
+        repeatEnd: raw.repeatEnd !== undefined ? Boolean(raw.repeatEnd) : true,
+        isStreakCompletionOnly,
+        prevStreakWasZero,
+        diamondCount: Math.max(0, Math.round(Number(raw.diamondCount ?? 1))),
         isDemo,
         now,
       });
     }
   }
 
+  /**
+   * Ensures a unique character & seat for userId.
+   * - If already active (even if mid-departure!), cancels departure and refreshes their 120s timer.
+   * - If returning after a previous 120s departure, restores their session merit & gift history from MeritLedger,
+   *   assigns an available seat, and starts a new 120s timer!
+   */
   private ensureParticipant(params: {
     userId: string;
     username: string;
@@ -1364,45 +1837,59 @@ export class TikTokEventManager {
     avatarUrl?: string;
     isDemo: boolean;
     now: number;
-  }): { participant: Participant; isNew: boolean } {
+  }): { participant: Participant; isNew: boolean; isReturning: boolean } {
     const existing = this.participantsMap.get(params.userId);
     if (existing) {
+      if (existing.isDeparting) {
+        this.cancelParticipantDeparture(existing, params.now);
+      }
       existing.username = params.username;
       existing.nickname = params.nickname || existing.nickname;
       if (params.avatarUrl) existing.avatarUrl = params.avatarUrl;
       existing.lastActivityAt = params.now;
-      return { participant: existing, isNew: false };
+      existing.lastInteractionAt = params.now;
+      this.syncParticipantToLedger(existing);
+      return { participant: existing, isNew: false, isReturning: false };
     }
 
     const { seatIndex, laneOffset } = this.seatManager.assignSeatForUser(params.userId);
     const seed = hashStringToFloat(params.userId);
-    const priorLikes = this.userCumulativeLikes.get(params.userId) || 0;
+    const priorLedger = this.meritLedger.get(params.userId);
+    const priorLikes = this.userCumulativeLikes.get(params.userId) || priorLedger?.totalLikes || 0;
 
     const created: Participant = {
       userId: params.userId,
       username: params.username,
       nickname: params.nickname,
-      avatarUrl:
-        params.avatarUrl || buildSacredAvatarDataUri(params.userId, params.nickname || params.username),
+      avatarUrl: params.avatarUrl || priorLedger?.avatarUrl,
       seatIndex,
       laneOffset,
-      points: 10 + priorLikes,
-      giftCount: 0,
-      commentCount: 0,
+      points: priorLedger ? priorLedger.points : 10 + priorLikes,
+      giftCount: priorLedger?.giftCount ?? 0,
+      commentCount: priorLedger?.commentCount ?? 0,
       totalLikes: priorLikes,
-      woodenFishStrikes: 0,
+      woodenFishStrikes: priorLedger?.woodenFishStrikes ?? 0,
+      lastGiftName: priorLedger?.lastGiftName,
+      lastGiftAt: priorLedger?.lastGiftAt,
       animState: 'walking_aisle',
       animStateStartedAt: params.now,
       activeRitual: null,
       activeWoodenFish: null,
       lastActivityAt: params.now,
+      lastInteractionAt: params.now,
+      isDeparting: false,
       robeHueShift: (seed - 0.5) * 0.08,
       hasHairBun: seed > 0.45,
       isDemo: params.isDemo,
     };
 
     this.participantsMap.set(params.userId, created);
-    return { participant: created, isNew: true };
+    this.syncParticipantToLedger(created);
+    return {
+      participant: created,
+      isNew: !priorLedger,
+      isReturning: Boolean(priorLedger),
+    };
   }
 
   private handleCommentEvent(params: {
@@ -1415,26 +1902,31 @@ export class TikTokEventManager {
     isDemo: boolean;
     now: number;
   }): void {
-    const cleanComment = params.comment.replace(/\s+/g, ' ').trim().slice(0, 140);
-    if (!cleanComment || CLIENT_PROFANITY_REGEX.test(cleanComment)) return;
+    // Normalize ONLY Unicode NFC & whitespace while preserving the viewer's full exact comment
+    const rawNormalized = params.comment.normalize('NFC').replace(/\s+/g, ' ').trim();
+    if (!rawNormalized || CLIENT_PROFANITY_REGEX.test(rawNormalized)) return;
 
     const prevCommentAt = this.userCommentRateMap.get(params.userId) || 0;
-    if (params.now - prevCommentAt < 950) return;
+    if (params.now - prevCommentAt < 750) return;
     this.userCommentRateMap.set(params.userId, params.now);
 
     const { participant, isNew } = this.ensureParticipant(params);
     participant.commentCount += 1;
-    participant.lastComment = cleanComment;
+    // Attached strictly to THIS character's userId for the 5-second overhead bubble (comment text ONLY, no username!)
+    const displayComment = rawNormalized.slice(0, 140);
+    participant.lastComment = displayComment;
     participant.lastCommentAt = params.now;
+    participant.lastCommentId = params.eventId;
 
-    const prayerMatch = detectPrayerTopic(cleanComment);
+    const prayerMatch = detectPrayerTopic(rawNormalized);
     const isPrayer = Boolean(prayerMatch);
     const pointsDelta = isPrayer ? 20 : 8;
     participant.points += pointsDelta;
+    this.syncParticipantToLedger(participant);
 
     if (isPrayer && prayerMatch) {
       participant.ritualStatusLabel = prayerMatch.topicLabel;
-      participant.ritualStatusUntil = params.now + 4800;
+      participant.ritualStatusUntil = params.now + 4600;
 
       if (
         !isNew &&
@@ -1447,148 +1939,68 @@ export class TikTokEventManager {
         participant.animState = 'praying';
         participant.animStateStartedAt = params.now;
         if (this.effectsEnabled) {
-          soundSynthesizer.playIncenseChime(0.42);
+          soundSynthesizer.playIncenseChime(0.4);
         }
       }
     }
 
-    this.pushNotification({
-      id: `notif-${params.eventId}`,
-      kind: isNew ? 'welcome' : isPrayer ? 'prayer' : 'comment',
-      username: params.username,
-      avatarUrl: participant.avatarUrl,
-      message: cleanComment,
-      pointsDelta,
-      isDemo: params.isDemo,
-      timestamp: params.now,
-    });
-
+    // VIENEU TTS READS EXACT REAL COMMENTS VIA CONFIGURABLE FORMULA ("CÔNG THỨC ĐỌC BÌNH LUẬN")
+    // Never replaces viewer comments with generic predefined sentences or invented wishes!
     const voiceSettings = voiceManager.getSettings();
-    if (isNew && voiceSettings.welcomeAnnouncementsEnabled) {
+    const commentVoiceAllowed =
+      voiceSettings.autoNarrationEnabled &&
+      voiceSettings.commentVoiceEnabled !== false &&
+      (isPrayer
+        ? voiceSettings.prayerAnnouncementsEnabled !== false
+        : voiceSettings.commentAnnouncementsEnabled !== false);
+
+    if (commentVoiceAllowed) {
+      const formatted = formatCommentSpeechFormula(
+        voiceSettings.commentVoiceFormula,
+        params.nickname || params.username,
+        rawNormalized,
+        {
+          maxCommentLength: voiceSettings.maxCommentLength,
+          blockSpamLinksAndUnsafe: voiceSettings.blockSpamLinksAndUnsafe,
+        },
+      );
+
+      if (formatted.allowed && formatted.text) {
+        voiceManager.enqueue({
+          text: formatted.text,
+          priority: isPrayer
+            ? AnnouncementPriority.PRAYER_COMMENT
+            : AnnouncementPriority.ORDINARY_COMMENT,
+          category: isPrayer ? 'prayer_comment' : 'ordinary_comment',
+          userId: params.userId,
+          username: params.username,
+          isDemo: params.isDemo,
+          dedupeKey: `comment:${params.userId}:${formatted.normalizedComment}`,
+        });
+      }
+    } else if (isNew && voiceSettings.welcomeAnnouncementsEnabled) {
+      const spokenName = normalizeSpeechUsername(params.nickname || params.username);
       const tpl =
         voiceSettings.welcomeTemplate?.trim() ||
         'Chào mừng Phật tử {username} đã đến với Chùa Online. Kính chúc bạn luôn bình an.';
-      const welcomeSpeech = tpl.replace(/\{username\}/g, params.nickname || params.username);
       voiceManager.enqueue({
-        text: welcomeSpeech,
-        priority: AnnouncementPriority.WELCOME,
-        category: 'welcome',
+        text: tpl.replace(/\{username\}/gi, () => spokenName),
+        priority: AnnouncementPriority.SPECIAL_RITUAL,
+        category: 'special_ritual',
+        userId: params.userId,
+        username: params.username,
+        isDemo: params.isDemo,
         dedupeKey: `welcome:${params.userId}`,
-      });
-    } else if (isPrayer && prayerMatch && voiceSettings.prayerAnnouncementsEnabled) {
-      voiceManager.enqueue({
-        text: prayerMatch.spokenBlessing(params.nickname || params.username),
-        priority: AnnouncementPriority.COMMENT,
-        category: 'comment',
-        dedupeKey: `prayer:${prayerMatch.topicLabel}:${Math.floor(params.now / 8000)}`,
       });
     }
 
     this.scheduleNotify();
   }
 
-  private resolveCeremonialMapping(giftId: number, giftName: string, diamondCount: number): GiftMapping {
-    const lower = giftName.trim().toLowerCase();
-    const exactId = this.giftMappings.find((m) => m.enabled && m.giftId === giftId);
-    if (exactId) return exactId;
-
-    const exactName = this.giftMappings.find(
-      (m) =>
-        m.enabled &&
-        (m.giftName.toLowerCase() === lower || m.vietnameseLabel.toLowerCase() === lower),
-    );
-    if (exactName) return exactName;
-
-    // Keyword / diamond tier fallback onto the 5 configured Buddhist ceremony offerings
-    if (/bell|chuông|chung/i.test(lower)) {
-      return this.giftMappings.find((m) => m.ritualType === 'altar_bell') || DEFAULT_GIFT_MAPPINGS[1];
-    }
-    if (/fruit|quả|mâm/i.test(lower)) {
-      return (
-        this.giftMappings.find((m) => m.ritualType === 'altar_fruit_tray') || DEFAULT_GIFT_MAPPINGS[2]
-      );
-    }
-    if (/lotus|sen|đài/i.test(lower)) {
-      return (
-        this.giftMappings.find((m) => m.ritualType === 'altar_lotus_pedestal') ||
-        DEFAULT_GIFT_MAPPINGS[3]
-      );
-    }
-    if (diamondCount >= 180 || /pagoda|tháp|lion|universe/i.test(lower)) {
-      return (
-        this.giftMappings.find(
-          (m) => m.ritualType === 'altar_pagoda' || m.ritualType === 'altar_grand_ceremony',
-        ) || DEFAULT_GIFT_MAPPINGS[4]
-      );
-    }
-    if (diamondCount >= 80) {
-      return (
-        this.giftMappings.find((m) => m.ritualType === 'altar_lotus_pedestal') ||
-        DEFAULT_GIFT_MAPPINGS[3]
-      );
-    }
-    if (diamondCount >= 25) {
-      return (
-        this.giftMappings.find((m) => m.ritualType === 'altar_fruit_tray') || DEFAULT_GIFT_MAPPINGS[2]
-      );
-    }
-    if (diamondCount >= 8) {
-      return this.giftMappings.find((m) => m.ritualType === 'altar_bell') || DEFAULT_GIFT_MAPPINGS[1];
-    }
-
-    return this.giftMappings[0] || DEFAULT_GIFT_MAPPINGS[0];
-  }
-
-  private getRitualLabelAndDuration(mapping: GiftMapping): {
-    ritualLabel: string;
-    durationMs: number;
-    playBellBeforeSpeech: boolean;
-  } {
-    switch (mapping.ritualType) {
-      case 'altar_bell':
-        return {
-          ritualLabel: `Thỉnh ${mapping.vietnameseLabel}`,
-          durationMs: 4600,
-          playBellBeforeSpeech: true,
-        };
-      case 'altar_fruit_tray':
-        return {
-          ritualLabel: `Dâng ${mapping.vietnameseLabel}`,
-          durationMs: 4600,
-          playBellBeforeSpeech: false,
-        };
-      case 'altar_lotus_pedestal':
-        return {
-          ritualLabel: `Dâng ${mapping.vietnameseLabel}`,
-          durationMs: 5000,
-          playBellBeforeSpeech: false,
-        };
-      case 'altar_pagoda':
-      case 'altar_grand_ceremony':
-        return {
-          ritualLabel: `Nghi lễ ${mapping.vietnameseLabel}`,
-          durationMs: 5800,
-          playBellBeforeSpeech: true,
-        };
-      case 'altar_lantern':
-        return {
-          ritualLabel: `Thả ${mapping.vietnameseLabel}`,
-          durationMs: 4400,
-          playBellBeforeSpeech: false,
-        };
-      case 'altar_incense':
-        return {
-          ritualLabel: 'Thắp hương cầu an',
-          durationMs: 4200,
-          playBellBeforeSpeech: false,
-        };
-      case 'altar_flower':
-      default:
-        return {
-          ritualLabel: `Dâng ${mapping.vietnameseLabel}`,
-          durationMs: 4300,
-          playBellBeforeSpeech: false,
-        };
+  private recordGiftCalculationLog(entry: GiftCalculationLogEntry): void {
+    this.recentGiftLogs.unshift(entry);
+    if (this.recentGiftLogs.length > 24) {
+      this.recentGiftLogs.length = 24;
     }
   }
 
@@ -1598,63 +2010,374 @@ export class TikTokEventManager {
     username: string;
     nickname: string;
     avatarUrl?: string;
-    giftId: number;
+    giftId: string;
     giftName: string;
-    giftCount: number;
+    giftPictureUrl?: string;
+    deltaCount: number;
+    totalStreakCount: number;
+    isStreakable: boolean;
+    repeatEnd: boolean;
+    isStreakCompletionOnly: boolean;
+    prevStreakWasZero: boolean;
     diamondCount: number;
     isDemo: boolean;
     now: number;
   }): void {
-    const { participant } = this.ensureParticipant(params);
-    const mapping = this.resolveCeremonialMapping(
-      params.giftId,
-      params.giftName,
-      params.diamondCount,
-    );
+    // 1. Strict primary lookup by normalized TikTok Gift ID string ONLY (never match by gift name!)
+    const mapping = giftRegistry.getByGiftId(params.giftId);
 
-    if (!mapping.enabled) {
+    // 2. UNKNOWN GIFT HANDLING ("QUÀ CHƯA CẤU HÌNH")
+    if (!mapping) {
+      if (params.deltaCount > 0) {
+        giftRegistry.reportUnknownGift({
+          giftId: params.giftId,
+          giftName: params.giftName,
+          iconUrl: params.giftPictureUrl,
+          diamondCount: params.diamondCount,
+          countDelta: params.deltaCount,
+          username: params.username,
+          isDemo: params.isDemo,
+        });
+      }
+      const existingLedger = this.meritLedger.get(params.userId);
+      this.recordGiftCalculationLog({
+        id: `glog-${params.eventId}`,
+        userId: params.userId,
+        username: params.username,
+        giftId: params.giftId,
+        giftName: params.giftName,
+        giftCount: Math.max(1, params.deltaCount),
+        unitPoints: 0,
+        awardedPoints: 0,
+        totalUserPoints: existingLedger?.points ?? 0,
+        ritualName: 'Chưa cấu hình',
+        status: 'unknown',
+        isDemo: params.isDemo,
+        timestamp: params.now,
+      });
       this.scheduleNotify();
       return;
     }
 
-    // Increment live event counter on "🪷 CÚNG DƯỜNG CẦU AN"
-    this.giftEventCounts[mapping.id] = (this.giftEventCounts[mapping.id] || 0) + params.giftCount;
+    // 3. DISABLED GIFT HANDLING
+    if (!mapping.enabled) {
+      const existingLedger = this.meritLedger.get(params.userId);
+      this.recordGiftCalculationLog({
+        id: `glog-${params.eventId}`,
+        userId: params.userId,
+        username: params.username,
+        giftId: mapping.giftId,
+        giftName: mapping.vietnameseLabel || mapping.giftName,
+        giftCount: Math.max(1, params.deltaCount),
+        unitPoints: mapping.points,
+        awardedPoints: 0,
+        totalUserPoints: existingLedger?.points ?? 0,
+        ritualName: getRitualDisplayNameVi(mapping.ritualType),
+        status: 'disabled',
+        isDemo: params.isDemo,
+        timestamp: params.now,
+      });
+      this.scheduleNotify();
+      return;
+    }
 
-    const awardedPoints = mapping.points * params.giftCount;
+    // 4. Find or create unique 3D participant for this TikTok userId & refresh 120s inactivity timer
+    const { participant } = this.ensureParticipant(params);
+
+    // 5. Award exact merit points for the new delta count (never double-counted across streaks!)
+    const awardedPoints = mapping.points * params.deltaCount;
+    if (params.deltaCount > 0) {
+      this.giftEventCounts[mapping.giftId] =
+        (this.giftEventCounts[mapping.giftId] || 0) + params.deltaCount;
+      if (mapping.id && mapping.id !== mapping.giftId) {
+        this.giftEventCounts[mapping.id] = this.giftEventCounts[mapping.giftId];
+      }
+      participant.points += awardedPoints;
+      participant.giftCount += params.deltaCount;
+      participant.lastGiftName = mapping.vietnameseLabel || mapping.giftName;
+      participant.lastGiftAt = params.now;
+    }
+    participant.lastInteractionAt = params.now;
+    this.syncParticipantToLedger(participant);
+
+    const ritualDisplayVi = getRitualDisplayNameVi(mapping.ritualType);
     const isLarge =
       mapping.isLarge ||
+      mapping.voicePriority === AnnouncementPriority.LARGE_GIFT ||
       mapping.ritualType === 'altar_pagoda' ||
       mapping.ritualType === 'altar_grand_ceremony';
 
-    participant.points += awardedPoints;
-    participant.giftCount += params.giftCount;
-    participant.lastGiftName = mapping.vietnameseLabel;
-    participant.lastGiftAt = params.now;
+    // Intermediate streak packet (`repeatEnd === false`):
+    // Start ceremony on the first tap of the streak, defer voice announcement until `repeatEnd === true` so full streak count is spoken cleanly without duplicate speech!
+    if (params.isStreakable && !params.repeatEnd) {
+      this.recordGiftCalculationLog({
+        id: `glog-${params.eventId}`,
+        userId: participant.userId,
+        username: participant.username,
+        giftId: mapping.giftId,
+        giftName: mapping.vietnameseLabel || mapping.giftName,
+        giftCount: params.deltaCount,
+        unitPoints: mapping.points,
+        awardedPoints,
+        totalUserPoints: participant.points,
+        ritualName: ritualDisplayVi,
+        status: 'streak_update',
+        isDemo: params.isDemo,
+        timestamp: params.now,
+      });
 
-    const { ritualLabel, durationMs, playBellBeforeSpeech } =
-      this.getRitualLabelAndDuration(mapping);
+      if (params.prevStreakWasZero) {
+        this.executeGiftCeremonyAndEffects({
+          participant,
+          mapping,
+          ritualDisplayVi,
+          isLarge,
+          awardedPoints: mapping.points * params.totalStreakCount,
+          eventId: params.eventId,
+          isDemo: params.isDemo,
+          now: params.now,
+        });
+      }
+      this.scheduleNotify();
+      return;
+    }
 
-    const template =
-      mapping.ttsTemplate ||
-      'Xin cảm ơn Phật tử {username} đã tham gia nghi lễ cúng dường.';
-    const spokenText = template.replace(
-      /\{username\}/g,
-      params.nickname || params.username,
-    );
+    // 6. Per-gift cooldown enforcement (merit points already credited above; throttles duplicate spam ceremonies/voices)
+    const cooldownKey = `${participant.userId}:${mapping.giftId}`;
+    const cooldownMs = Math.max(0, Number(mapping.cooldownSec ?? 1.2)) * 1000;
+    const prevExecAt = this.lastGiftExecutionByKey.get(cooldownKey) || 0;
+    if (
+      !params.isStreakCompletionOnly &&
+      !params.isStreakable &&
+      cooldownMs > 0 &&
+      params.now - prevExecAt < cooldownMs
+    ) {
+      this.recordGiftCalculationLog({
+        id: `glog-${params.eventId}`,
+        userId: participant.userId,
+        username: participant.username,
+        giftId: mapping.giftId,
+        giftName: mapping.vietnameseLabel || mapping.giftName,
+        giftCount: params.deltaCount,
+        unitPoints: mapping.points,
+        awardedPoints,
+        totalUserPoints: participant.points,
+        ritualName: ritualDisplayVi,
+        status: 'cooldown_throttled',
+        isDemo: params.isDemo,
+        timestamp: params.now,
+      });
+      this.scheduleNotify();
+      return;
+    }
+    this.lastGiftExecutionByKey.set(cooldownKey, params.now);
 
-    // Queue the ritual for BOTH existing seated characters AND newly created characters!
-    // (If newly created, tryDispatchQueuedRituals waits until they claim their permanent seat, then sends them to the altar!)
-    this.enqueueAltarRitual({
+    const effectiveGiftCountForSpeech = params.isStreakable
+      ? Math.max(1, params.totalStreakCount)
+      : Math.max(1, params.deltaCount);
+    const effectiveMeritForSpeech = mapping.points * effectiveGiftCountForSpeech;
+
+    this.recordGiftCalculationLog({
+      id: `glog-${params.eventId}`,
       userId: participant.userId,
-      type: mapping.ritualType,
-      label: `${ritualLabel} · ${mapping.ceremonyTitle}`,
-      ceremonyBadgeTitle: mapping.badgeCeremonyLabel || mapping.ceremonyTitle || 'LỄ PHẬT CẦU AN',
-      offeringLabel: mapping.vietnameseLabel,
-      spokenText,
-      playBellBeforeSpeech,
-      isLargeCeremony: isLarge,
-      durationMs,
+      username: participant.username,
+      giftId: mapping.giftId,
+      giftName: mapping.vietnameseLabel || mapping.giftName,
+      giftCount: effectiveGiftCountForSpeech,
+      unitPoints: mapping.points,
+      awardedPoints: params.isStreakable ? effectiveMeritForSpeech : awardedPoints,
+      totalUserPoints: participant.points,
+      ritualName: ritualDisplayVi,
+      status: 'executed',
+      isDemo: params.isDemo,
+      timestamp: params.now,
     });
+
+    this.pushEventNotification({
+      kind: 'gift',
+      username: participant.username,
+      message: `cúng dường ${mapping.vietnameseLabel}${effectiveGiftCountForSpeech > 1 ? ` ×${effectiveGiftCountForSpeech}` : ''}`,
+      pointsDelta: params.isStreakable ? effectiveMeritForSpeech : awardedPoints,
+      isDemo: params.isDemo,
+      now: params.now,
+    });
+
+    // 7. Dynamic VieNeuTTS Template Interpolation ({username}, {giftName}, {giftCount}, {meritPoints}, {ritualName})
+    const spokenName = normalizeSpeechUsername(params.nickname || params.username);
+    const spokenText = renderGiftVoiceTemplate(mapping.ttsTemplate, {
+      username: spokenName,
+      giftName: mapping.vietnameseLabel || mapping.giftName,
+      giftCount: effectiveGiftCountForSpeech,
+      meritPoints: effectiveMeritForSpeech,
+      ritualName: ritualDisplayVi,
+    });
+
+    const playBellBeforeSpeech =
+      mapping.soundEffect === 'temple_bell' ||
+      mapping.soundEffect === 'grand_ceremony_bell' ||
+      isLarge;
+
+    const voiceSettings = voiceManager.getSettings();
+    if (spokenText && voiceSettings.giftAnnouncementsEnabled) {
+      const voicePriority =
+        mapping.voicePriority === AnnouncementPriority.LARGE_GIFT ||
+        mapping.voicePriority === AnnouncementPriority.NORMAL_GIFT ||
+        mapping.voicePriority === AnnouncementPriority.SPECIAL_RITUAL
+          ? mapping.voicePriority
+          : isLarge
+            ? AnnouncementPriority.LARGE_GIFT
+            : AnnouncementPriority.NORMAL_GIFT;
+
+      voiceManager.enqueue({
+        text: spokenText,
+        priority: voicePriority,
+        category: voicePriority === AnnouncementPriority.LARGE_GIFT ? 'large_gift' : 'gift',
+        userId: participant.userId,
+        username: participant.username,
+        isDemo: params.isDemo,
+        dedupeKey: `gift:${participant.userId}:${mapping.giftId}:${Math.floor(params.now / 1500)}:${effectiveGiftCountForSpeech}`,
+        playBellBeforeSpeech,
+        bypassRateLimit: isLarge,
+      });
+    }
+
+    // 8. Trigger 3D Ceremony & Effects (unless already launched on first packet of this streak)
+    if (!params.isStreakable || params.prevStreakWasZero) {
+      this.executeGiftCeremonyAndEffects({
+        participant,
+        mapping,
+        ritualDisplayVi,
+        isLarge,
+        awardedPoints: effectiveMeritForSpeech,
+        spokenText,
+        playBellBeforeSpeech,
+        eventId: params.eventId,
+        isDemo: params.isDemo,
+        now: params.now,
+      });
+    } else if (this.effectsEnabled && isLarge) {
+      this.prominentGiftBanner = {
+        id: `banner-${params.eventId}`,
+        username: participant.username,
+        giftName: `${mapping.vietnameseLabel} ×${effectiveGiftCountForSpeech} (${mapping.ceremonyTitle})`,
+        points: effectiveMeritForSpeech,
+        isDemo: params.isDemo,
+        expiresAt: params.now + 4800,
+      };
+    }
+
+    this.scheduleNotify();
+  }
+
+  private executeGiftCeremonyAndEffects(params: {
+    participant: Participant;
+    mapping: GiftMapping;
+    ritualDisplayVi: string;
+    isLarge: boolean;
+    awardedPoints: number;
+    spokenText?: string;
+    playBellBeforeSpeech?: boolean;
+    eventId: string;
+    isDemo: boolean;
+    now: number;
+  }): void {
+    const { participant, mapping, ritualDisplayVi, isLarge, awardedPoints } = params;
+    const durationMs = Math.max(
+      1500,
+      Math.min(15000, Math.round((mapping.animationDurationSec || 4.5) * 1000)),
+    );
+    const seat = getSeatPosition(participant.seatIndex);
+
+    // Case A: "No animation" — keep character seated without changing pose, play configured sound/visual effect immediately
+    if (mapping.ritualType === 'no_animation' || mapping.characterAnimation === 'none') {
+      participant.ritualStatusLabel = `${mapping.ceremonyTitle} · ${mapping.vietnameseLabel}`;
+      participant.ritualStatusUntil = params.now + durationMs;
+
+      if (this.effectsEnabled) {
+        if (mapping.soundEffect && mapping.soundEffect !== 'none') {
+          soundSynthesizer.playConfiguredGiftSound(mapping.soundEffect, 0.8);
+        }
+        if (mapping.effect && mapping.effect !== 'none') {
+          this.spawnEffect({
+            id: `fx-noanim-${params.eventId}`,
+            type: mapping.effect,
+            userId: participant.userId,
+            username: participant.username,
+            giftName: mapping.vietnameseLabel,
+            points: awardedPoints,
+            seatIndex: participant.seatIndex,
+            originX: seat.x,
+            originZ: seat.z,
+            startedAt: params.now,
+            durationMs,
+          });
+        }
+      }
+    }
+    // Case B: Seated prayer at mat (`seated_pray` or `seat_prayer`) without walking to altar
+    else if (mapping.characterAnimation === 'seated_pray' || mapping.ritualType === 'seat_prayer') {
+      if (!participant.activeRitual) {
+        participant.animState = 'praying';
+        participant.animStateStartedAt = params.now;
+      }
+      participant.ritualStatusLabel = `${ritualDisplayVi} · ${mapping.vietnameseLabel}`;
+      participant.ritualStatusUntil = params.now + durationMs;
+
+      this.addOrRefreshLotusBadge({
+        userId: participant.userId,
+        username: participant.username,
+        nickname: participant.nickname,
+        avatarUrl: participant.avatarUrl,
+        ceremonyTitle: mapping.badgeCeremonyLabel || mapping.ceremonyTitle || 'LỄ PHẬT CẦU AN',
+        offeringLabel: mapping.vietnameseLabel,
+        preferredSide: seat.side,
+        durationMs: durationMs + 2500,
+      });
+
+      if (this.effectsEnabled) {
+        if (mapping.soundEffect && mapping.soundEffect !== 'none') {
+          soundSynthesizer.playConfiguredGiftSound(mapping.soundEffect, 0.82);
+        }
+        if (mapping.effect && mapping.effect !== 'none') {
+          this.spawnEffect({
+            id: `fx-seatpray-${params.eventId}`,
+            type: mapping.effect,
+            userId: participant.userId,
+            username: participant.username,
+            giftName: mapping.vietnameseLabel,
+            points: awardedPoints,
+            seatIndex: participant.seatIndex,
+            originX: seat.x,
+            originZ: seat.z,
+            startedAt: params.now,
+            durationMs,
+          });
+        }
+      }
+    }
+    // Case C: Full Altar Ceremony — stand up from seat, walk center aisle to reserved altar station, perform ritual, return to seat
+    else {
+      this.enqueueAltarRitual({
+        userId: participant.userId,
+        giftId: mapping.giftId,
+        giftName: mapping.vietnameseLabel || mapping.giftName,
+        type: mapping.ritualType,
+        characterAnimation: mapping.characterAnimation,
+        customEffect: mapping.effect,
+        customSound: mapping.soundEffect,
+        awardedPoints,
+        isDemo: params.isDemo,
+        label: `${ritualDisplayVi} · ${mapping.vietnameseLabel}`,
+        ceremonyBadgeTitle: mapping.badgeCeremonyLabel || mapping.ceremonyTitle || 'LỄ PHẬT CẦU AN',
+        offeringLabel: mapping.vietnameseLabel,
+        spokenText: params.spokenText,
+        playBellBeforeSpeech: params.playBellBeforeSpeech,
+        isLargeCeremony: isLarge,
+        isGiftCeremony: true,
+        priorityOverride: mapping.voicePriority,
+        durationMs,
+      });
+    }
 
     if (this.effectsEnabled && isLarge) {
       this.prominentGiftBanner = {
@@ -1663,26 +2386,9 @@ export class TikTokEventManager {
         giftName: `${mapping.vietnameseLabel} (${mapping.ceremonyTitle})`,
         points: awardedPoints,
         isDemo: params.isDemo,
-        expiresAt: params.now + 5600,
+        expiresAt: params.now + 4800,
       };
     }
-
-    this.pushNotification({
-      id: `notif-${params.eventId}`,
-      kind: isLarge ? 'large_gift' : 'gift',
-      username: params.username,
-      avatarUrl: participant.avatarUrl,
-      message: `${ritualLabel} · ${mapping.ceremonyTitle} (${params.giftCount}x ${mapping.vietnameseLabel})`,
-      pointsDelta: awardedPoints,
-      isDemo: params.isDemo,
-      timestamp: params.now,
-    });
-
-    this.scheduleNotify();
-  }
-
-  private pushNotification(item: FeedNotification): void {
-    this.notifications = [item, ...this.notifications].slice(0, 28);
   }
 }
 

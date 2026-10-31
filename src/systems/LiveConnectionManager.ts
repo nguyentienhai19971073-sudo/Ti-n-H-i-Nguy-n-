@@ -1,13 +1,21 @@
 import { io, Socket } from 'socket.io-client';
 import {
   ConnectionStatus,
+  GiftActionPreset,
+  GiftMapping,
   ServerConnectionSnapshot,
   TikTokNormalizedEvent,
+  UnknownGiftRecord,
 } from '../types/temple';
 
 type EventSubscriber = (event: TikTokNormalizedEvent) => void;
 type StatusSubscriber = (snapshot: ServerConnectionSnapshot) => void;
 type AdminCmdSubscriber = (cmd: { action: string; payload?: any }) => void;
+type GiftsUpdatedSubscriber = (payload: {
+  gifts: GiftMapping[];
+  presets: GiftActionPreset[];
+}) => void;
+type UnknownGiftsSubscriber = (payload: { unknownGifts: UnknownGiftRecord[] }) => void;
 
 export class LiveConnectionManager {
   private socket: Socket | null = null;
@@ -30,6 +38,8 @@ export class LiveConnectionManager {
   private eventSubscribers = new Set<EventSubscriber>();
   private statusSubscribers = new Set<StatusSubscriber>();
   private adminCmdSubscribers = new Set<AdminCmdSubscriber>();
+  private giftsSubscribers = new Set<GiftsUpdatedSubscriber>();
+  private unknownGiftsSubscribers = new Set<UnknownGiftsSubscriber>();
 
   public init(): void {
     if (this.socket) return;
@@ -58,6 +68,22 @@ export class LiveConnectionManager {
     socket.on('temple:admin_command', (cmd: { action: string; payload?: any }) => {
       for (const sub of this.adminCmdSubscribers) {
         sub(cmd);
+      }
+    });
+
+    socket.on('gifts:updated', (payload: { gifts: GiftMapping[]; presets: GiftActionPreset[] }) => {
+      if (payload && Array.isArray(payload.gifts)) {
+        for (const sub of this.giftsSubscribers) {
+          sub(payload);
+        }
+      }
+    });
+
+    socket.on('gifts:unknown_updated', (payload: { unknownGifts: UnknownGiftRecord[] }) => {
+      if (payload && Array.isArray(payload.unknownGifts)) {
+        for (const sub of this.unknownGiftsSubscribers) {
+          sub(payload);
+        }
       }
     });
 
@@ -99,6 +125,16 @@ export class LiveConnectionManager {
   public onAdminCommand(cb: AdminCmdSubscriber): () => void {
     this.adminCmdSubscribers.add(cb);
     return () => this.adminCmdSubscribers.delete(cb);
+  }
+
+  public onGiftsUpdated(cb: GiftsUpdatedSubscriber): () => void {
+    this.giftsSubscribers.add(cb);
+    return () => this.giftsSubscribers.delete(cb);
+  }
+
+  public onUnknownGiftsUpdated(cb: UnknownGiftsSubscriber): () => void {
+    this.unknownGiftsSubscribers.add(cb);
+    return () => this.unknownGiftsSubscribers.delete(cb);
   }
 
   public async connectTikTok(username: string): Promise<ServerConnectionSnapshot> {

@@ -1,11 +1,17 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { createServer } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server as SocketIOServer } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
 import { TikTokLiveAdapter } from './server/tiktokAdapter.ts';
+import {
+  GiftValidationError,
+  giftStore,
+  isAdminAuthRequired,
+  isAdminAuthorizedRequest,
+} from './server/giftStore.ts';
 import {
   fetchVieNeuVoices,
   generatePeacefulVietnameseGreeting,
@@ -20,20 +26,63 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!isAdminAuthorizedRequest(req)) {
+    res.status(401).json({
+      ok: false,
+      error:
+        'Yêu cầu mã quản trị (ADMIN_ACCESS_TOKEN) hợp lệ để thay đổi cấu hình quà tặng trên máy chủ.',
+      authRequired: true,
+    });
+    return;
+  }
+  next();
+}
+
 async function startServer() {
   const app = express();
   const httpServer = createServer(app);
   const io = new SocketIOServer(httpServer, {
     cors: {
       origin: '*',
-      methods: ['GET', 'POST'],
+      methods: ['GET', 'POST', 'PUT', 'DELETE'],
     },
   });
 
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '2mb' }));
+
+  const broadcastGiftsUpdated = () => {
+    io.emit('gifts:updated', {
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets(),
+    });
+  };
+
+  const broadcastUnknownGiftsUpdated = () => {
+    io.emit('gifts:unknown_updated', {
+      unknownGifts: giftStore.listUnknownGifts(),
+    });
+  };
 
   const tiktokAdapter = new TikTokLiveAdapter(
     (normalizedEvent: TikTokNormalizedEvent) => {
+      if (normalizedEvent.type === 'gift' && normalizedEvent.giftId !== undefined) {
+        const mapped = giftStore.getGiftById(normalizedEvent.giftId);
+        if (!mapped && !normalizedEvent.isStreakCompletionOnly) {
+          const logged = giftStore.recordUnknownGift({
+            giftId: normalizedEvent.giftId,
+            giftName: normalizedEvent.giftName,
+            iconUrl: normalizedEvent.giftPictureUrl,
+            diamondCount: normalizedEvent.diamondCount,
+            countDelta: Math.max(1, Number(normalizedEvent.giftCount || 1)),
+            username: normalizedEvent.username,
+            isDemo: normalizedEvent.isDemo,
+          });
+          if (logged) {
+            broadcastUnknownGiftsUpdated();
+          }
+        }
+      }
       io.emit('tiktok:event', normalizedEvent);
     },
     (snapshot) => {
@@ -47,8 +96,171 @@ async function startServer() {
       ok: true,
       timestamp: Date.now(),
       connection: tiktokAdapter.getSnapshot(),
+      giftStorage: giftStore.getStorageMetadata(),
+      adminAuthRequired: isAdminAuthRequired(),
     });
   });
+
+  // ============================================================================
+  // DYNAMIC TIKTOK GIFT MANAGEMENT & PERSISTENT SQLITE REGISTRY ENDPOINTS
+  // ============================================================================
+
+  app.get('/api/gifts', (_req, res) => {
+    res.json({
+      ok: true,
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets(),
+      unknownGifts: giftStore.listUnknownGifts(),
+      storage: giftStore.getStorageMetadata(),
+      authRequired: isAdminAuthRequired(),
+    });
+  });
+
+  app.get('/api/gifts/export', (_req, res) => {
+    res.json({
+      version: 1,
+      app: 'CHÙA ONLINE',
+      exportedAt: new Date().toISOString(),
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets().filter((p) => !p.isBuiltin),
+    });
+  });
+
+  app.post('/api/gifts', requireAdminAuth, (req, res) => {
+    try {
+      const created = giftStore.createGift(req.body || {});
+      broadcastGiftsUpdated();
+      broadcastUnknownGiftsUpdated();
+      res.status(201).json({
+        ok: true,
+        gift: created,
+        gifts: giftStore.listGifts(),
+        unknownGifts: giftStore.listUnknownGifts(),
+      });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Không thể tạo cấu hình quà tặng.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.put('/api/gifts/:giftId', requireAdminAuth, (req, res) => {
+    try {
+      const updated = giftStore.updateGift(String(req.params.giftId || ''), req.body || {});
+      broadcastGiftsUpdated();
+      broadcastUnknownGiftsUpdated();
+      res.json({
+        ok: true,
+        gift: updated,
+        gifts: giftStore.listGifts(),
+        unknownGifts: giftStore.listUnknownGifts(),
+      });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Không thể cập nhật cấu hình quà tặng.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.delete('/api/gifts/:giftId', requireAdminAuth, (req, res) => {
+    const deleted = giftStore.deleteGift(String(req.params.giftId || ''));
+    if (!deleted) {
+      res.status(404).json({ ok: false, error: 'Không tìm thấy quà tặng cần xóa.' });
+      return;
+    }
+    broadcastGiftsUpdated();
+    res.json({ ok: true, gifts: giftStore.listGifts() });
+  });
+
+  app.post('/api/gifts/reset', requireAdminAuth, (_req, res) => {
+    const gifts = giftStore.resetToDefaultGifts();
+    broadcastGiftsUpdated();
+    res.json({ ok: true, gifts });
+  });
+
+  app.post('/api/gifts/import', requireAdminAuth, (req, res) => {
+    try {
+      const mode = req.body?.mode === 'replace' ? 'replace' : 'merge';
+      const payload = req.body?.payload !== undefined ? req.body.payload : req.body;
+      const result = giftStore.importGiftsBulk(payload, mode);
+      broadcastGiftsUpdated();
+      broadcastUnknownGiftsUpdated();
+      res.json({
+        ok: true,
+        importedCount: result.importedCount,
+        gifts: result.gifts,
+        presets: result.presets,
+        unknownGifts: giftStore.listUnknownGifts(),
+      });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Nhập tệp JSON thất bại.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/gifts/presets', requireAdminAuth, (req, res) => {
+    try {
+      const preset = giftStore.savePreset(req.body || {});
+      broadcastGiftsUpdated();
+      res.status(201).json({ ok: true, preset, presets: giftStore.listPresets() });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Không thể lưu bộ mẫu hành động.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.delete('/api/gifts/presets/:presetId', requireAdminAuth, (req, res) => {
+    const deleted = giftStore.deletePreset(String(req.params.presetId || ''));
+    if (!deleted) {
+      res.status(400).json({
+        ok: false,
+        error: 'Không thể xóa bộ mẫu tích hợp sẵn hoặc không tìm thấy bộ mẫu.',
+      });
+      return;
+    }
+    broadcastGiftsUpdated();
+    res.json({ ok: true, presets: giftStore.listPresets() });
+  });
+
+  app.post('/api/gifts/unknown', (req, res) => {
+    const logged = giftStore.recordUnknownGift({
+      giftId: req.body?.giftId,
+      giftName: req.body?.giftName,
+      iconUrl: req.body?.iconUrl,
+      diamondCount: req.body?.diamondCount,
+      countDelta: req.body?.countDelta,
+      username: req.body?.username,
+      isDemo: req.body?.isDemo,
+    });
+    if (logged) {
+      broadcastUnknownGiftsUpdated();
+    }
+    res.json({ ok: true, unknownGifts: giftStore.listUnknownGifts() });
+  });
+
+  app.delete('/api/gifts/unknown', requireAdminAuth, (_req, res) => {
+    giftStore.clearUnknownGifts();
+    broadcastUnknownGiftsUpdated();
+    res.json({ ok: true, unknownGifts: [] });
+  });
+
+  // ============================================================================
+  // TIKTOK LIVE CONNECTION & VIENEU TTS PROXY ENDPOINTS
+  // ============================================================================
 
   // Connect to real TikTok LIVE stream
   app.post('/api/tiktok/connect', async (req, res) => {
@@ -179,6 +391,13 @@ async function startServer() {
   // Socket.IO Real-Time Synchronization
   io.on('connection', (socket) => {
     socket.emit('tiktok:status', tiktokAdapter.getSnapshot());
+    socket.emit('gifts:updated', {
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets(),
+    });
+    socket.emit('gifts:unknown_updated', {
+      unknownGifts: giftStore.listUnknownGifts(),
+    });
 
     socket.on('tiktok:connect', async (payload: { username?: string }) => {
       await tiktokAdapter.connect(String(payload?.username || ''));

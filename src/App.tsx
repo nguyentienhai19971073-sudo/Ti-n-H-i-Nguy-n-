@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SlidersHorizontal, X } from 'lucide-react';
 import {
-  DEFAULT_GIFT_MAPPINGS,
+  BuddhaModelLoadStatus,
   DEFAULT_OVERLAY_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
   GiftMapping,
@@ -15,6 +15,7 @@ import {
   TikTokNormalizedEvent,
   VoiceSettings,
 } from './types/temple';
+import { GiftRegistrySnapshot, giftRegistry } from './systems/GiftRegistry';
 import { liveConnectionManager } from './systems/LiveConnectionManager';
 import {
   TempleCongregationState,
@@ -22,15 +23,26 @@ import {
 } from './systems/TikTokEventManager';
 import { voiceManager, VoiceStateSnapshot } from './systems/VoiceManager';
 import {
+  loadPersistedOverlaySettings,
+  loadPersistedVoiceSettings,
+  savePersistedOverlaySettings,
+  savePersistedVoiceSettings,
+} from './systems/OverlayTheme';
+import {
   PRIMARY_DEMO_VIEWER,
+  PrayerDemoTopic,
   clearPendingDemoBatches,
   createSampleFirstCommentEvent,
   createSampleFollowIncenseEvent,
   createSampleLikeMilestoneEvent,
+  createSampleOrdinaryCommentEvent,
   createSamplePrayerCommentEvent,
+  createSamplePrayerTopicEvent,
   createSampleRoseGiftSameAccountEvent,
   createSampleShareLanternEvent,
   scheduleDemoParticipantsBatch,
+  scheduleGiftPriorityVoiceDemo,
+  scheduleLeaderboardRanksDemo,
 } from './systems/DemoEventManager';
 import { TempleScene } from './components/three/TempleScene';
 import { StreamingOverlay } from './components/ui/StreamingOverlay';
@@ -46,28 +58,51 @@ export default function App() {
   const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceStateSnapshot>(() =>
     voiceManager.getSnapshot(),
   );
-  const [giftMappings, setGiftMappings] = useState<GiftMapping[]>(() => [
-    ...DEFAULT_GIFT_MAPPINGS,
-  ]);
-  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => ({
-    ...DEFAULT_VOICE_SETTINGS,
-  }));
+  const [registrySnapshot, setRegistrySnapshot] = useState<GiftRegistrySnapshot>(() =>
+    giftRegistry.getSnapshot(),
+  );
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() =>
+    loadPersistedVoiceSettings(),
+  );
   const [overlaySettings, setOverlaySettings] = useState<StreamOverlaySettings>(() => {
     const params =
       typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-    const obsParam = params?.get('obs') === '1' || params?.get('mode') === 'obs';
-    return {
-      ...DEFAULT_OVERLAY_SETTINGS,
-      obsCleanView: Boolean(obsParam),
-    };
+    const obsParam = Boolean(params?.get('obs') === '1' || params?.get('mode') === 'obs');
+    return loadPersistedOverlaySettings(obsParam);
   });
 
+  const [buddhaModelStatus, setBuddhaModelStatus] = useState<BuddhaModelLoadStatus>('builtin');
+  const [buddhaModelDetail, setBuddhaModelDetail] = useState(
+    'Đang sử dụng tôn tượng Đức Phật Vàng điêu khắc 3D tích hợp',
+  );
   const [mobileAdminOpen, setMobileAdminOpen] = useState(false);
 
-  // Initialize Real-Time Socket.IO & Event Subscriptions
+  const giftMappings = registrySnapshot.gifts;
+
+  const handleBuddhaModelStatus = useCallback(
+    (status: BuddhaModelLoadStatus, detail?: string) => {
+      setBuddhaModelStatus(status);
+      if (detail) setBuddhaModelDetail(detail);
+    },
+    [],
+  );
+
+  // Initialize Real-Time Socket.IO, Persistent GiftRegistry & Event Subscriptions
   useEffect(() => {
     liveConnectionManager.init();
+    giftRegistry.init();
 
+    voiceManager.updateSettings(voiceSettings);
+    tiktokEventManager.setMaxParticipants(overlaySettings.maxParticipants);
+    tiktokEventManager.setMaxConcurrentCeremonies(overlaySettings.maxConcurrentCeremonies);
+    tiktokEventManager.setEffectsEnabled(overlaySettings.effectsEnabled);
+    tiktokEventManager.setInactivitySettings({
+      enabled: overlaySettings.inactivityTimeoutEnabled,
+      timeoutSec: overlaySettings.inactivityTimeoutSec,
+      demoAccelerated: overlaySettings.demoAcceleratedTimeout,
+    });
+
+    const unsubRegistry = giftRegistry.subscribe(setRegistrySnapshot);
     const unsubCongregation = tiktokEventManager.subscribe(setCongregation);
     const unsubStatus = liveConnectionManager.onStatus(setConnectionSnapshot);
     const unsubVoice = voiceManager.subscribe(setVoiceSnapshot);
@@ -117,6 +152,7 @@ export default function App() {
       if (demoIntroTimer1) window.clearTimeout(demoIntroTimer1);
       if (demoIntroTimer2) window.clearTimeout(demoIntroTimer2);
       clearPendingDemoBatches();
+      unsubRegistry();
       unsubCongregation();
       unsubStatus();
       unsubVoice();
@@ -134,12 +170,12 @@ export default function App() {
     voiceManager.enableAudio();
   }, []);
 
-  // Trigger any of the 5 configured ceremonial offerings for PRIMARY_DEMO_VIEWER
+  // Trigger any configured ceremonial offering for PRIMARY_DEMO_VIEWER via exact normalized giftId
   const handleSimulateGiftMapping = useCallback(
     (mapping: GiftMapping) => {
       const now = Date.now();
       dispatchDemoEvent({
-        eventId: `demo-ceremony-${mapping.id}-${now}`,
+        eventId: `demo-ceremony-${mapping.giftId}-${now}`,
         type: 'gift',
         userId: PRIMARY_DEMO_VIEWER.userId,
         username: PRIMARY_DEMO_VIEWER.username,
@@ -147,6 +183,7 @@ export default function App() {
         avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
         giftId: mapping.giftId,
         giftName: mapping.giftName,
+        giftPictureUrl: mapping.uploadedImageData || mapping.iconUrl,
         giftCount: 1,
         diamondCount: mapping.referenceCoins || 1,
         isDemo: true,
@@ -156,8 +193,6 @@ export default function App() {
     [dispatchDemoEvent],
   );
 
-  // Trigger 10, 100, or 1000 Likes on an existing seated character (never spawning from likes alone in LIVE;
-  // in Demo mode if the hall was cleared empty, seats PRIMARY_DEMO_VIEWER first so the test button works seamlessly)
   const handleSimulateLikeMilestone = useCallback(
     (likes: 10 | 100 | 1000) => {
       const snap = tiktokEventManager.getSnapshot();
@@ -184,21 +219,38 @@ export default function App() {
     [dispatchDemoEvent],
   );
 
+  const handleSimulatePrayerTopic = useCallback(
+    (topic: PrayerDemoTopic) => {
+      dispatchDemoEvent(createSamplePrayerTopicEvent(topic, false));
+    },
+    [dispatchDemoEvent],
+  );
+
   const handleUpdateGiftMappings = useCallback((next: GiftMapping[]) => {
-    setGiftMappings(next);
     tiktokEventManager.setGiftMappings(next);
   }, []);
 
   const handleUpdateVoiceSettings = useCallback((next: VoiceSettings) => {
     setVoiceSettings(next);
     voiceManager.updateSettings(next);
+    savePersistedVoiceSettings(next);
   }, []);
 
   const handleUpdateOverlaySettings = useCallback((next: StreamOverlaySettings) => {
     setOverlaySettings(next);
+    savePersistedOverlaySettings(next);
     tiktokEventManager.setMaxParticipants(next.maxParticipants);
     tiktokEventManager.setMaxConcurrentCeremonies(next.maxConcurrentCeremonies);
     tiktokEventManager.setEffectsEnabled(next.effectsEnabled);
+    tiktokEventManager.setInactivitySettings({
+      enabled: next.inactivityTimeoutEnabled,
+      timeoutSec: next.inactivityTimeoutSec,
+      demoAccelerated: next.demoAcceleratedTimeout,
+    });
+  }, []);
+
+  const handleManualRemoveInactive = useCallback(() => {
+    return tiktokEventManager.removeInactiveParticipantsManual();
   }, []);
 
   const handleClearParticipants = useCallback(() => {
@@ -244,19 +296,21 @@ export default function App() {
             pagodaGlowUntil={congregation.pagodaGlowUntil}
             floatingLanternCount={congregation.floatingLanternCount}
             overlaySettings={overlaySettings}
+            currentSpeakerUserId={voiceSnapshot.currentSpeakerUserId}
+            onBuddhaModelStatus={handleBuddhaModelStatus}
           />
           <StreamingOverlay
-            participantsCount={congregation.participants.length}
+            participantsCount={congregation.activeParticipantCount}
             waitingCount={congregation.waitingOverflowCount}
             activeAltarCount={congregation.activeAltarCount}
             queuedAltarCount={congregation.queuedAltarCount}
             totalLikesCount={congregation.totalLikesCount}
             totalWoodenFishCount={congregation.totalWoodenFishCount}
             leaderboard={congregation.leaderboard}
+            notifications={congregation.notifications}
             giftMappings={giftMappings}
             giftEventCounts={congregation.giftEventCounts}
             activeLotusBadges={congregation.activeLotusBadges}
-            notifications={congregation.notifications}
             prominentGiftBanner={congregation.prominentGiftBanner}
             connectionSnapshot={connectionSnapshot}
             voiceSnapshot={voiceSnapshot}
@@ -297,19 +351,21 @@ export default function App() {
             pagodaGlowUntil={congregation.pagodaGlowUntil}
             floatingLanternCount={congregation.floatingLanternCount}
             overlaySettings={overlaySettings}
+            currentSpeakerUserId={voiceSnapshot.currentSpeakerUserId}
+            onBuddhaModelStatus={handleBuddhaModelStatus}
           />
           <StreamingOverlay
-            participantsCount={congregation.participants.length}
+            participantsCount={congregation.activeParticipantCount}
             waitingCount={congregation.waitingOverflowCount}
             activeAltarCount={congregation.activeAltarCount}
             queuedAltarCount={congregation.queuedAltarCount}
             totalLikesCount={congregation.totalLikesCount}
             totalWoodenFishCount={congregation.totalWoodenFishCount}
             leaderboard={congregation.leaderboard}
+            notifications={congregation.notifications}
             giftMappings={giftMappings}
             giftEventCounts={congregation.giftEventCounts}
             activeLotusBadges={congregation.activeLotusBadges}
-            notifications={congregation.notifications}
             prominentGiftBanner={congregation.prominentGiftBanner}
             connectionSnapshot={connectionSnapshot}
             voiceSnapshot={voiceSnapshot}
@@ -328,7 +384,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => setMobileAdminOpen(true)}
-          className="lg:hidden absolute bottom-3 left-3 z-30 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#240a0e]/95 border border-[#d4af37]/55 text-xs font-semibold text-[#ffe082] shadow-lg cursor-pointer"
+          className="lg:hidden absolute bottom-2 left-2 z-30 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#240a0e]/95 border border-[#d4af37]/55 text-[11px] font-semibold text-[#ffe082] shadow-lg cursor-pointer"
         >
           <SlidersHorizontal className="w-3.5 h-3.5" />
           <span>Quản trị &amp; Demo</span>
@@ -336,10 +392,17 @@ export default function App() {
       </main>
 
       {/* DESKTOP ADMINISTRATOR DASHBOARD SIDEBAR */}
-      <div className="hidden lg:block w-[435px] xl:w-[465px] h-full shrink-0">
+      <div className="hidden lg:block w-[460px] xl:w-[495px] h-full shrink-0">
         <AdminDashboard
           connectionSnapshot={connectionSnapshot}
-          participantsCount={congregation.participants.length}
+          registrySnapshot={registrySnapshot}
+          leaderboard={congregation.leaderboard}
+          ceremonyQueueInspector={congregation.ceremonyQueueInspector}
+          recentGiftLogs={congregation.recentGiftLogs}
+          participantsCount={congregation.activeParticipantCount}
+          departingCount={congregation.departingCount}
+          sessionMeritUsersCount={congregation.sessionMeritUsersCount}
+          departedUsersCount={congregation.departedUsersCount}
           occupiedMainSeats={congregation.occupiedMainSeats}
           waitingOverflowCount={congregation.waitingOverflowCount}
           totalEventsProcessed={congregation.totalEventsProcessed}
@@ -350,6 +413,8 @@ export default function App() {
           voiceSettings={voiceSettings}
           voiceSnapshot={voiceSnapshot}
           overlaySettings={overlaySettings}
+          buddhaModelStatus={buddhaModelStatus}
+          buddhaModelDetail={buddhaModelDetail}
           onConnectTikTok={async (u) => {
             await liveConnectionManager.connectTikTok(u);
           }}
@@ -362,16 +427,21 @@ export default function App() {
           onSimulateFollowIncense={() => dispatchDemoEvent(createSampleFollowIncenseEvent())}
           onSimulateShareLantern={() => dispatchDemoEvent(createSampleShareLanternEvent())}
           onSimulatePrayerComment={() => dispatchDemoEvent(createSamplePrayerCommentEvent(true))}
+          onSimulatePrayerTopic={handleSimulatePrayerTopic}
+          onSimulateOrdinaryComment={() => dispatchDemoEvent(createSampleOrdinaryCommentEvent())}
+          onTestGiftPriorityVoice={() => scheduleGiftPriorityVoiceDemo(dispatchDemoEvent)}
+          onPopulateLeaderboardDemo={() => scheduleLeaderboardRanksDemo(dispatchDemoEvent)}
           onAddParticipantsBatch={(count) =>
             scheduleDemoParticipantsBatch(count, dispatchDemoEvent)
           }
+          onManualRemoveInactive={handleManualRemoveInactive}
           onCustomSimulatedEvent={dispatchDemoEvent}
           onResetDemo={handleResetDemo}
           onClearParticipants={handleClearParticipants}
           onResetSeating={handleResetSeating}
           onUpdateGiftMappings={handleUpdateGiftMappings}
           onUpdateVoiceSettings={handleUpdateVoiceSettings}
-          onTestVoice={() => voiceManager.testVoice()}
+          onTestVoice={(sampleText) => voiceManager.testVoice(sampleText)}
           onClearVoiceQueue={() => voiceManager.stopAndClearQueue()}
           onEnableAudio={handleEnableAudio}
           onUpdateOverlaySettings={handleUpdateOverlaySettings}
@@ -381,7 +451,7 @@ export default function App() {
       {/* MOBILE / TABLET SLIDE-OVER ADMINISTRATOR DRAWER */}
       {mobileAdminOpen && (
         <div className="lg:hidden fixed inset-0 z-50 flex justify-end bg-black/70">
-          <div className="relative w-full max-w-[425px] h-full">
+          <div className="relative w-full max-w-[450px] h-full">
             <button
               type="button"
               onClick={() => setMobileAdminOpen(false)}
@@ -392,7 +462,14 @@ export default function App() {
             </button>
             <AdminDashboard
               connectionSnapshot={connectionSnapshot}
-              participantsCount={congregation.participants.length}
+              registrySnapshot={registrySnapshot}
+              leaderboard={congregation.leaderboard}
+              ceremonyQueueInspector={congregation.ceremonyQueueInspector}
+              recentGiftLogs={congregation.recentGiftLogs}
+              participantsCount={congregation.activeParticipantCount}
+              departingCount={congregation.departingCount}
+              sessionMeritUsersCount={congregation.sessionMeritUsersCount}
+              departedUsersCount={congregation.departedUsersCount}
               occupiedMainSeats={congregation.occupiedMainSeats}
               waitingOverflowCount={congregation.waitingOverflowCount}
               totalEventsProcessed={congregation.totalEventsProcessed}
@@ -403,6 +480,8 @@ export default function App() {
               voiceSettings={voiceSettings}
               voiceSnapshot={voiceSnapshot}
               overlaySettings={overlaySettings}
+              buddhaModelStatus={buddhaModelStatus}
+              buddhaModelDetail={buddhaModelDetail}
               onConnectTikTok={async (u) => {
                 await liveConnectionManager.connectTikTok(u);
               }}
@@ -417,16 +496,23 @@ export default function App() {
               onSimulatePrayerComment={() =>
                 dispatchDemoEvent(createSamplePrayerCommentEvent(true))
               }
+              onSimulatePrayerTopic={handleSimulatePrayerTopic}
+              onSimulateOrdinaryComment={() =>
+                dispatchDemoEvent(createSampleOrdinaryCommentEvent())
+              }
+              onTestGiftPriorityVoice={() => scheduleGiftPriorityVoiceDemo(dispatchDemoEvent)}
+              onPopulateLeaderboardDemo={() => scheduleLeaderboardRanksDemo(dispatchDemoEvent)}
               onAddParticipantsBatch={(count) =>
                 scheduleDemoParticipantsBatch(count, dispatchDemoEvent)
               }
+              onManualRemoveInactive={handleManualRemoveInactive}
               onCustomSimulatedEvent={dispatchDemoEvent}
               onResetDemo={handleResetDemo}
               onClearParticipants={handleClearParticipants}
               onResetSeating={handleResetSeating}
               onUpdateGiftMappings={handleUpdateGiftMappings}
               onUpdateVoiceSettings={handleUpdateVoiceSettings}
-              onTestVoice={() => voiceManager.testVoice()}
+              onTestVoice={(sampleText) => voiceManager.testVoice(sampleText)}
               onClearVoiceQueue={() => voiceManager.stopAndClearQueue()}
               onEnableAudio={handleEnableAudio}
               onUpdateOverlaySettings={handleUpdateOverlaySettings}

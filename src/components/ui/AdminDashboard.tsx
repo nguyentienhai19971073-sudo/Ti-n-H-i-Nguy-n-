@@ -25,15 +25,24 @@ import {
   Heart,
   Share2,
   Bell,
+  Clock,
+  LogOut,
+  MessageSquareHeart,
+  Trophy,
+  Save,
+  Sliders,
 } from 'lucide-react';
 import {
+  BuddhaModelLoadStatus,
   CURATED_VIENEU_VOICES,
   ConnectionStatus,
-  DEFAULT_GIFT_MAPPINGS,
-  GiftIconType,
+  DEFAULT_COMMENT_VOICE_FORMULA,
+  GiftCalculationLogEntry,
+  GiftCeremonyQueueItemSnapshot,
+  GiftInterruptPolicy,
   GiftMapping,
+  MeritLedgerEntry,
   QualityPreset,
-  RitualActionType,
   ServerConnectionSnapshot,
   StreamOverlaySettings,
   TTSProviderType,
@@ -42,15 +51,37 @@ import {
   VieNeuVoiceOption,
   VoiceSettings,
 } from '../../types/temple';
-import { VoiceStateSnapshot, voiceManager } from '../../systems/VoiceManager';
-import { PRIMARY_DEMO_VIEWER, buildSacredAvatarDataUri } from '../../systems/DemoEventManager';
+import { GiftRegistrySnapshot } from '../../systems/GiftRegistry';
+import {
+  VoiceStateSnapshot,
+  formatCommentSpeechFormula,
+  voiceManager,
+} from '../../systems/VoiceManager';
+import {
+  PRIMARY_DEMO_VIEWER,
+  PrayerDemoTopic,
+} from '../../systems/DemoEventManager';
 import { TOTAL_MAIN_MATS } from '../../systems/SeatManager';
+import {
+  savePersistedOverlaySettings,
+  savePersistedVoiceSettings,
+} from '../../systems/OverlayTheme';
+import { GiftVisualIcon } from './BuddhistGiftPanel';
+import { GiftManagementPanel } from './GiftManagementPanel';
+import { GiftSimulatorPanel } from './GiftSimulatorPanel';
 
 type AdminTab = 'demo' | 'tiktok' | 'characters' | 'gifts' | 'voice' | 'streaming';
 
 interface AdminDashboardProps {
   connectionSnapshot: ServerConnectionSnapshot;
+  registrySnapshot: GiftRegistrySnapshot;
+  leaderboard: MeritLedgerEntry[];
+  ceremonyQueueInspector: GiftCeremonyQueueItemSnapshot[];
+  recentGiftLogs: GiftCalculationLogEntry[];
   participantsCount: number;
+  departingCount: number;
+  sessionMeritUsersCount: number;
+  departedUsersCount: number;
   occupiedMainSeats: number;
   waitingOverflowCount: number;
   totalEventsProcessed: number;
@@ -61,6 +92,8 @@ interface AdminDashboardProps {
   voiceSettings: VoiceSettings;
   voiceSnapshot: VoiceStateSnapshot;
   overlaySettings: StreamOverlaySettings;
+  buddhaModelStatus: BuddhaModelLoadStatus;
+  buddhaModelDetail: string;
   onConnectTikTok: (username: string) => Promise<void>;
   onDisconnectTikTok: () => Promise<void>;
   onSimulateFirstComment: () => void;
@@ -69,14 +102,19 @@ interface AdminDashboardProps {
   onSimulateFollowIncense: () => void;
   onSimulateShareLantern: () => void;
   onSimulatePrayerComment: () => void;
+  onSimulatePrayerTopic: (topic: PrayerDemoTopic) => void;
+  onSimulateOrdinaryComment: () => void;
+  onTestGiftPriorityVoice: () => void;
+  onPopulateLeaderboardDemo: () => void;
   onAddParticipantsBatch: (count: number) => void;
+  onManualRemoveInactive: () => number;
   onCustomSimulatedEvent: (ev: TikTokNormalizedEvent) => void;
   onResetDemo: () => void;
   onClearParticipants: () => void;
   onResetSeating: () => void;
   onUpdateGiftMappings: (mappings: GiftMapping[]) => void;
   onUpdateVoiceSettings: (settings: VoiceSettings) => void;
-  onTestVoice: () => void;
+  onTestVoice: (sampleText?: string) => void;
   onClearVoiceQueue: () => void;
   onEnableAudio: () => void;
   onUpdateOverlaySettings: (settings: StreamOverlaySettings) => void;
@@ -84,7 +122,14 @@ interface AdminDashboardProps {
 
 export function AdminDashboard({
   connectionSnapshot,
+  registrySnapshot,
+  leaderboard,
+  ceremonyQueueInspector,
+  recentGiftLogs,
   participantsCount,
+  departingCount,
+  sessionMeritUsersCount,
+  departedUsersCount,
   occupiedMainSeats,
   waitingOverflowCount,
   totalEventsProcessed,
@@ -95,6 +140,8 @@ export function AdminDashboard({
   voiceSettings,
   voiceSnapshot,
   overlaySettings,
+  buddhaModelStatus,
+  buddhaModelDetail,
   onConnectTikTok,
   onDisconnectTikTok,
   onSimulateFirstComment,
@@ -102,13 +149,18 @@ export function AdminDashboard({
   onSimulateGiftMapping,
   onSimulateFollowIncense,
   onSimulateShareLantern,
-  onSimulatePrayerComment,
+  onSimulatePrayerComment: _onSimulatePrayerComment,
+  onSimulatePrayerTopic,
+  onSimulateOrdinaryComment,
+  onTestGiftPriorityVoice,
+  onPopulateLeaderboardDemo,
   onAddParticipantsBatch,
+  onManualRemoveInactive,
   onCustomSimulatedEvent,
   onResetDemo,
   onClearParticipants,
   onResetSeating,
-  onUpdateGiftMappings,
+  onUpdateGiftMappings: _onUpdateGiftMappings,
   onUpdateVoiceSettings,
   onTestVoice,
   onClearVoiceQueue,
@@ -116,6 +168,7 @@ export function AdminDashboard({
   onUpdateOverlaySettings,
 }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>('demo');
+  const [simulatorGiftId, setSimulatorGiftId] = useState<string | undefined>(undefined);
   const [tiktokInput, setTiktokInput] = useState(connectionSnapshot.tiktokUsername || '');
   const [isConnecting, setIsConnecting] = useState(false);
 
@@ -133,10 +186,46 @@ export function AdminDashboard({
     message: string;
   } | null>(null);
 
-  // Custom event tester fields
+  // Custom event tester, Comment Voice Formula preview & Buddha model input state
   const [customUsername, setCustomUsername] = useState('phattu.anlac');
-  const [customComment, setCustomComment] = useState('Nam mô A Di Đà Phật, cầu gia đạo bình an');
+  const [customComment, setCustomComment] = useState('Con cầu cho mẹ luôn mạnh khỏe');
+  const [formulaPreviewUsername, setFormulaPreviewUsername] = useState('Minh Anh');
+  const [formulaPreviewComment, setFormulaPreviewComment] = useState(
+    'Con cầu cho mẹ luôn mạnh khỏe',
+  );
+  const [voiceSavedBanner, setVoiceSavedBanner] = useState<string | null>(null);
+  const [overlaySavedBanner, setOverlaySavedBanner] = useState<string | null>(null);
   const [newPeacefulMsg, setNewPeacefulMsg] = useState('');
+  const [buddhaUrlDraft, setBuddhaUrlDraft] = useState(overlaySettings.buddhaModelUrl || '');
+  const [manualDepartFeedback, setManualDepartFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBuddhaUrlDraft(overlaySettings.buddhaModelUrl || '');
+  }, [overlaySettings.buddhaModelUrl]);
+
+  const commentFormulaPreview = formatCommentSpeechFormula(
+    voiceSettings.commentVoiceFormula,
+    formulaPreviewUsername,
+    formulaPreviewComment,
+    {
+      maxCommentLength: voiceSettings.maxCommentLength,
+      blockSpamLinksAndUnsafe: voiceSettings.blockSpamLinksAndUnsafe,
+    },
+  );
+
+  const handleSaveCommentFormulaSettings = () => {
+    savePersistedVoiceSettings(voiceSettings);
+    onUpdateVoiceSettings({ ...voiceSettings });
+    setVoiceSavedBanner('Đã lưu cài đặt CÔNG THỨC ĐỌC BÌNH LUẬN.');
+    window.setTimeout(() => setVoiceSavedBanner(null), 3200);
+  };
+
+  const handleSaveOverlayStyleSettings = () => {
+    savePersistedOverlaySettings(overlaySettings);
+    onUpdateOverlaySettings({ ...overlaySettings });
+    setOverlaySavedBanner('Đã lưu kích thước và độ trong suốt RGBA của các bảng hiển thị.');
+    window.setTimeout(() => setOverlaySavedBanner(null), 3200);
+  };
 
   const loadVieNeuVoices = async (mode: VieNeuMode, localUrl?: string) => {
     setLoadingVoices(true);
@@ -192,6 +281,16 @@ export function AdminDashboard({
     }
   };
 
+  const handleManualRemoveClick = () => {
+    const removed = onManualRemoveInactive();
+    setManualDepartFeedback(
+      removed > 0
+        ? `Đã mời ${removed} Phật tử không tương tác đứng dậy cúi chào và rời chánh điện.`
+        : 'Hiện chưa có Phật tử nào rảnh để rời điện (hoặc đang hành lễ).',
+    );
+    window.setTimeout(() => setManualDepartFeedback(null), 4000);
+  };
+
   const getCustomUserPayload = () => {
     const cleanUser = customUsername.trim().replace(/^@+/, '') || 'phattu.anlac';
     const userId = `custom-${cleanUser.toLowerCase()}`;
@@ -199,7 +298,6 @@ export function AdminDashboard({
       userId,
       username: cleanUser,
       nickname: cleanUser,
-      avatarUrl: buildSacredAvatarDataUri(userId, cleanUser),
     };
   };
 
@@ -247,10 +345,20 @@ export function AdminDashboard({
     });
   };
 
+  const effectiveTimeoutDisplay = overlaySettings.demoAcceleratedTimeout
+    ? 12
+    : overlaySettings.inactivityTimeoutSec;
+
+  const unknownCount = registrySnapshot.unknownGifts.length;
+
   const tabs: { id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }[] =
     [
       { id: 'demo', label: 'Demo Lễ', icon: Play },
-      { id: 'gifts', label: 'Quà tặng', icon: Gift },
+      {
+        id: 'gifts',
+        label: unknownCount > 0 ? `Quà TikTok (${unknownCount})` : 'Quà TikTok',
+        icon: Gift,
+      },
       { id: 'tiktok', label: 'TikTok LIVE', icon: Radio },
       { id: 'voice', label: 'Giọng AI', icon: Mic },
       { id: 'characters', label: 'Phật tử', icon: Users },
@@ -263,24 +371,20 @@ export function AdminDashboard({
       className="flex flex-col h-full w-full bg-[#130908] border-l border-[#d4af37]/30 text-[#f5ead6]"
     >
       {/* Top Studio Header */}
-      <div className="px-4 py-3 border-b border-[#d4af37]/25 bg-gradient-to-b from-[#290b10] to-[#150809] flex items-center justify-between gap-3">
+      <div className="px-4 py-2.5 border-b border-[#d4af37]/25 bg-gradient-to-b from-[#290b10] to-[#150809] flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-display text-lg font-bold text-[#ffe082] truncate">
-            Quản Trị Chùa Online
+          <h2 className="font-display text-base font-bold text-[#ffe082] truncate">
+            QUẢN TRỊ &amp; DEMO · CHÙA ONLINE
           </h2>
           <p className="text-[11px] text-[#cbb696] mt-0.5 truncate">
-            Phật tử: <span className="font-mono-tabular text-[#fff4dc]">{participantsCount}</span> ·
-            Đệm:{' '}
+            Hiện diện:{' '}
+            <span className="font-mono-tabular text-[#fff4dc]">{participantsCount}</span> · Đệm:{' '}
             <span className="font-mono-tabular text-[#fff4dc]">
               {occupiedMainSeats}/{TOTAL_MAIN_MATS}
             </span>{' '}
-            · ❤️{' '}
-            <span className="font-mono-tabular text-[#ffd978]">
-              {totalLikesCount.toLocaleString('vi-VN')}
-            </span>{' '}
-            · 🥁{' '}
-            <span className="font-mono-tabular text-[#ffd978]">
-              {totalWoodenFishCount.toLocaleString('vi-VN')}
+            · Hết hạn:{' '}
+            <span className="font-mono-tabular text-[#ffe082]">
+              {overlaySettings.inactivityTimeoutEnabled ? `${effectiveTimeoutDisplay}s` : 'Tắt'}
             </span>
           </p>
         </div>
@@ -335,82 +439,151 @@ export function AdminDashboard({
       {/* Scrollable Active Panel Body */}
       <div className="flex-1 overflow-y-auto temple-scroll p-4 space-y-5">
         {/* ==========================================================================
-            1. DEMO CEREMONIES & LIKE = GÕ MÕ CONTROLS TAB
+            1. DEMO CEREMONIES, GIFT SIMULATOR ("GIẢ LẬP QUÀ TẶNG") & TIMEOUT TESTS
            ========================================================================== */}
         {activeTab === 'demo' && (
           <div className="space-y-5">
-            {/* Section 1: The 5 Ceremonial Buddhist Offerings ("🪷 CÚNG DƯỜNG CẦU AN") */}
-            <div>
+            {/* Dynamic Gift Simulator Panel ("GIẢ LẬP QUÀ TẶNG") */}
+            <GiftSimulatorPanel
+              gifts={giftMappings}
+              selectedGiftId={simulatorGiftId}
+              leaderboard={leaderboard}
+              ceremonyQueueInspector={ceremonyQueueInspector}
+              recentGiftLogs={recentGiftLogs}
+              onDispatchDemoEvent={onCustomSimulatedEvent}
+            />
+
+            {/* Section 1: Configured Ceremonial Buddhist Offerings ("🪷 CÚNG DƯỜNG CẦU AN") */}
+            <div className="pt-2 border-t border-white/10">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-semibold text-[#ffe082]">
-                  01. Năm Nghi Lễ &ldquo;🪷 CÚNG DƯỜNG CẦU AN&rdquo;
+                  01. Nhấn Nhanh Nghi Lễ &ldquo;🪷 CÚNG DƯỜNG CẦU AN&rdquo;
                 </h3>
-                <span className="text-[11px] text-[#cbb696] font-mono-tabular">
-                  @{PRIMARY_DEMO_VIEWER.username}
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('gifts')}
+                  className="text-[11px] text-[#ffe28a] hover:underline cursor-pointer"
+                >
+                  Quản lý quà ({giftMappings.length}) →
+                </button>
               </div>
               <p className="text-xs text-[#b8a285] mt-1 leading-relaxed">
-                Nhấn để Phật tử đứng dậy rời đệm ngồi, tiến lên bàn thờ thực hiện nghi lễ tương ứng, hiện khung Hoa Sen Avatar, phát giọng đọc VieNeu rồi quay về đúng đệm ngồi cũ.
+                Nhấn để Phật tử @{PRIMARY_DEMO_VIEWER.username} đứng dậy rời đệm, tiến lên bàn thờ thực hiện nghi lễ và phát giọng đọc VieNeu ưu tiên cao nhất.
               </p>
 
-              <div className="grid grid-cols-1 gap-2 mt-3">
-                {giftMappings.map((gm) => {
-                  const liveCount = giftEventCounts[gm.id] ?? 0;
-                  const isGrand = gm.ritualType === 'altar_pagoda' || gm.isLarge;
-                  return (
-                    <button
-                      key={gm.id}
-                      type="button"
-                      onClick={() => onSimulateGiftMapping(gm)}
-                      className={`flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
-                        isGrand
-                          ? 'bg-gradient-to-r from-[#46111b] to-[#2b0c12] hover:from-[#571622] hover:to-[#381018] border-[#f5cd63]/65 text-[#fff4d8]'
-                          : 'bg-[#260d12] hover:bg-[#351219] border-[#d4af37]/40 text-[#fff4dc]'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        {gm.iconType === 'bell' ? (
-                          <Bell className="w-4 h-4 text-[#ffd978] shrink-0" />
-                        ) : gm.iconType === 'pagoda' ? (
-                          <Sparkles className="w-4 h-4 text-[#ffe082] shrink-0" />
-                        ) : (
-                          <Flower2 className="w-4 h-4 text-[#ff9ec7] shrink-0" />
-                        )}
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-[#ffe394] truncate">
-                            {gm.ceremonyTitle} – {gm.vietnameseLabel} –{' '}
-                            <span className="font-mono-tabular">{gm.referenceCoins} xu</span>
-                          </p>
-                          <p className="text-[10.5px] text-[#ccb79a] truncate">
-                            +{gm.points} công đức · {gm.badgeCeremonyLabel}
-                          </p>
+              <div className="grid grid-cols-1 gap-1.5 mt-2.5">
+                {giftMappings
+                  .filter((gm) => gm.enabled)
+                  .map((gm) => {
+                    const liveCount =
+                      giftEventCounts[gm.giftId] ?? giftEventCounts[gm.id] ?? 0;
+                    const isGrand =
+                      gm.ritualType === 'altar_pagoda' ||
+                      gm.ritualType === 'altar_grand_ceremony' ||
+                      gm.isLarge;
+                    return (
+                      <button
+                        key={gm.giftId || gm.id}
+                        type="button"
+                        onClick={() => onSimulateGiftMapping(gm)}
+                        className={`flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                          isGrand
+                            ? 'bg-gradient-to-r from-[#46111b] to-[#2b0c12] hover:from-[#571622] hover:to-[#381018] border-[#f5cd63]/65 text-[#fff4d8]'
+                            : 'bg-[#260d12] hover:bg-[#351219] border-[#d4af37]/40 text-[#fff4dc]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <GiftVisualIcon gift={gm} sizeClass="w-4 h-4" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-[#ffe394] truncate">
+                              {gm.ceremonyTitle} – {gm.vietnameseLabel} –{' '}
+                              <span className="font-mono-tabular">{gm.referenceCoins} xu</span>
+                            </p>
+                            <p className="text-[10.5px] text-[#ccb79a] truncate">
+                              ID: {gm.giftId} · +{gm.points} công đức · {gm.badgeCeremonyLabel}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                      <span className="px-2 py-0.5 rounded bg-[#140608] border border-[#d4af37]/35 font-mono-tabular text-[11px] font-bold text-[#ffd978] shrink-0">
-                        {liveCount} lễ
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span className="px-2 py-0.5 rounded bg-[#140608] border border-[#d4af37]/35 font-mono-tabular text-[11px] font-bold text-[#ffd978] shrink-0">
+                          {liveCount} lễ
+                        </span>
+                      </button>
+                    );
+                  })}
               </div>
             </div>
 
-            {/* Section 2: Interactive LIKE = GÕ MÕ System (10 / 100 / 1000 Likes) */}
-            <div className="pt-4 border-t border-white/10">
+            {/* Section 2: VieNeu Comment Narration & Gift-First Priority Testing */}
+            <div className="pt-4 border-t border-white/10 space-y-2.5">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-[#ffe082]">
-                  02. Hệ Thống &ldquo;❤️ LIKE = GÕ MÕ&rdquo; (1 Like = +1 Công Đức)
+                <h3 className="text-sm font-semibold text-[#ffe082] flex items-center gap-1.5">
+                  <MessageSquareHeart className="w-4 h-4 text-[#ff9ec7]" />
+                  <span>02. Bong Bóng Bình Luận &amp; Giọng Đọc Nguyên Bản</span>
                 </h3>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('voice')}
+                  className="text-[11px] text-[#ffe28a] hover:underline cursor-pointer whitespace-nowrap"
+                >
+                  Công thức đọc →
+                </button>
               </div>
-              <p className="text-xs text-[#b8a285] mt-1 leading-relaxed">
-                Gõ mõ gỗ trực tiếp tại đệm ngồi, âm thanh mõ khớp từng nhịp dùi: <strong>10 Likes</strong> (1 nhịp), <strong>100 Likes</strong> (3 nhịp + hạt vàng), <strong>1000 Likes</strong> (6 nhịp đại lễ + sen vàng + giọng đọc VieNeu).
+              <p className="text-xs text-[#b8a285] leading-relaxed">
+                Bong bóng 5 giây chỉ hiển thị nội dung bình luận gốc trên đầu nhân vật (không kèm tên hay avatar). VieNeu đọc nguyên văn theo công thức quản trị và luôn ưu tiên Quà tặng trước.
               </p>
 
-              <div className="grid grid-cols-3 gap-2 mt-3">
+              <div className="grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    ['binh_an', 'Cầu Bình An'],
+                    ['suc_khoe', 'Cầu Sức Khỏe'],
+                    ['tai_loc', 'Cầu Tài Lộc'],
+                    ['gia_dao', 'Cầu Gia Đạo'],
+                    ['tinh_duyen', 'Cầu Tình Duyên'],
+                    ['hoc_hanh', 'Cầu Học Hành'],
+                  ] as [PrayerDemoTopic, string][]
+                ).map(([topicKey, label]) => (
+                  <button
+                    key={topicKey}
+                    type="button"
+                    onClick={() => onSimulatePrayerTopic(topicKey)}
+                    className="px-2 py-1.5 rounded-lg bg-[#24120c] hover:bg-[#341a11] border border-[#d4af37]/35 text-[11px] font-medium text-[#fff4dc] transition-colors cursor-pointer truncate"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={onSimulateOrdinaryComment}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#20130e] hover:bg-[#2f1c15] border border-white/15 text-xs font-medium text-[#f5ead6] transition-colors cursor-pointer"
+                >
+                  <span>Bình luận thường</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onTestGiftPriorityVoice}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-gradient-to-r from-[#4b121c] to-[#2e0b12] hover:from-[#5e1724] hover:to-[#3b0e17] border border-[#f5cd63]/70 text-xs font-semibold text-[#ffe699] transition-colors cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Test Ưu Tiên Quà &gt; Bình Luận</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Section 3: Interactive LIKE = GÕ MÕ System */}
+            <div className="pt-4 border-t border-white/10">
+              <h3 className="text-sm font-semibold text-[#ffe082]">
+                03. Hệ Thống &ldquo;❤️ LIKE = GÕ MÕ&rdquo; (Làm Mới Hẹn Giờ 120s)
+              </h3>
+              <div className="grid grid-cols-3 gap-2 mt-2.5">
                 <button
                   type="button"
                   onClick={() => onSimulateLikeMilestone(10)}
-                  className="flex flex-col items-center justify-center gap-1 px-2.5 py-2.5 rounded-lg bg-[#260f13] hover:bg-[#36151b] border border-[#d4af37]/40 text-xs font-semibold text-[#fff3da] transition-colors cursor-pointer"
+                  className="flex flex-col items-center justify-center gap-0.5 px-2 py-2 rounded-lg bg-[#260f13] hover:bg-[#36151b] border border-[#d4af37]/40 text-xs font-semibold text-[#fff3da] transition-colors cursor-pointer"
                 >
                   <span className="flex items-center gap-1 text-[#ff9ebb]">
                     <Heart className="w-3.5 h-3.5 fill-current" />
@@ -422,7 +595,7 @@ export function AdminDashboard({
                 <button
                   type="button"
                   onClick={() => onSimulateLikeMilestone(100)}
-                  className="flex flex-col items-center justify-center gap-1 px-2.5 py-2.5 rounded-lg bg-[#301217] hover:bg-[#421920] border border-[#e5bd5a]/50 text-xs font-semibold text-[#ffe59e] transition-colors cursor-pointer"
+                  className="flex flex-col items-center justify-center gap-0.5 px-2 py-2 rounded-lg bg-[#301217] hover:bg-[#421920] border border-[#e5bd5a]/50 text-xs font-semibold text-[#ffe59e] transition-colors cursor-pointer"
                 >
                   <span className="flex items-center gap-1 text-[#ffa8c5]">
                     <Heart className="w-3.5 h-3.5 fill-current" />
@@ -434,7 +607,7 @@ export function AdminDashboard({
                 <button
                   type="button"
                   onClick={() => onSimulateLikeMilestone(1000)}
-                  className="flex flex-col items-center justify-center gap-1 px-2.5 py-2.5 rounded-lg bg-gradient-to-b from-[#4f131e] to-[#2e0b12] hover:from-[#631826] hover:to-[#3b0e17] border border-[#f5cd63]/75 text-xs font-bold text-[#ffe699] transition-colors cursor-pointer"
+                  className="flex flex-col items-center justify-center gap-0.5 px-2 py-2 rounded-lg bg-gradient-to-b from-[#4f131e] to-[#2e0b12] hover:from-[#631826] hover:to-[#3b0e17] border border-[#f5cd63]/75 text-xs font-bold text-[#ffe699] transition-colors cursor-pointer"
                 >
                   <span className="flex items-center gap-1 text-[#ffd978]">
                     <Sparkles className="w-3.5 h-3.5" />
@@ -445,34 +618,80 @@ export function AdminDashboard({
               </div>
             </div>
 
-            {/* Section 3: Other Temple Interactions & Crowd Load Testing */}
-            <div className="pt-4 border-t border-white/10">
-              <h3 className="text-sm font-semibold text-[#ffe082]">
-                03. Bình Luận, Follow, Share &amp; Đông Đảo Phật Tử
-              </h3>
-              <div className="grid grid-cols-2 gap-2 mt-2.5">
+            {/* Section 4: 120s Inactivity Timeout, 200-Seat 9:16 Frame & Compact Leaderboard Tests */}
+            <div className="pt-4 border-t border-white/10 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-[#ffe082] flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-[#ffe082]" />
+                  <span>04. Kiểm Thử Hết Hạn 120s, 200 Đệm 9:16 &amp; Top Công Đức</span>
+                </h3>
+              </div>
+
+              <label className="flex items-center justify-between gap-2 rounded-lg bg-[#1d0c0f] border border-[#d4af37]/35 px-3 py-2 text-xs cursor-pointer">
+                <div>
+                  <p className="font-semibold text-[#ffe49e]">
+                    Tăng tốc hết hạn 12 giây (Chỉ để test Demo)
+                  </p>
+                  <p className="text-[10.5px] text-[#b8a285]">
+                    Mặc định sản xuất luôn giữ chuẩn <span className="font-mono-tabular">120s</span> (2 phút).
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={overlaySettings.demoAcceleratedTimeout}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      demoAcceleratedTimeout: e.target.checked,
+                    })
+                  }
+                  className="accent-[#d4af37] w-4 h-4 shrink-0"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={onSimulateFirstComment}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
                 >
                   <Play className="w-3.5 h-3.5 text-[#f7d57c] shrink-0" />
-                  <span className="truncate">Bình luận đầu (Vào đệm)</span>
+                  <span className="truncate">Vào đệm / Quay lại</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={onSimulatePrayerComment}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
+                  onClick={handleManualRemoveClick}
+                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#2b1015] hover:bg-[#3c161d] border border-[#d4af37]/40 text-xs font-medium text-[#ffe39c] transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Mời rời điện ngay</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onPopulateLeaderboardDemo}
+                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
+                >
+                  <Trophy className="w-3.5 h-3.5 text-[#ffd978] shrink-0" />
+                  <span className="truncate">Tạo 8 Hạng Công Đức</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    onAddParticipantsBatch(Math.max(10, TOTAL_MAIN_MATS - occupiedMainSeats))
+                  }
+                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
                 >
                   <Users className="w-3.5 h-3.5 text-[#9bc4ff] shrink-0" />
-                  <span className="truncate">Bình luận Cầu nguyện</span>
+                  <span className="truncate">Lấp đầy {TOTAL_MAIN_MATS} Đệm Chính</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={onSimulateFollowIncense}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
                 >
                   <Flame className="w-3.5 h-3.5 text-[#ffb86b] shrink-0" />
                   <span className="truncate">Follow → Thắp hương</span>
@@ -481,32 +700,38 @@ export function AdminDashboard({
                 <button
                   type="button"
                   onClick={onSimulateShareLantern}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#24120c] hover:bg-[#331a11] border border-[#d4af37]/35 text-xs font-medium text-[#fff4dc] transition-colors cursor-pointer"
                 >
                   <Share2 className="w-3.5 h-3.5 text-[#ffd27d] shrink-0" />
-                  <span className="truncate">Share → Thả hoa đăng</span>
+                  <span className="truncate">Share → Hoa đăng</span>
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 mt-3">
+              {manualDepartFeedback && (
+                <p className="text-[11px] text-[#ffe28a] bg-[#240d12] border border-[#d4af37]/35 rounded-lg px-3 py-1.5">
+                  {manualDepartFeedback}
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => onAddParticipantsBatch(10)}
-                  className="px-3.5 py-2 rounded-lg bg-[#22130d] hover:bg-[#311c13] border border-white/15 text-xs font-medium text-[#f5ead6] transition-colors whitespace-nowrap cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg bg-[#22130d] hover:bg-[#311c13] border border-white/15 text-xs font-medium text-[#f5ead6] transition-colors whitespace-nowrap cursor-pointer"
                 >
                   + Thêm 10 Phật tử
                 </button>
                 <button
                   type="button"
                   onClick={() => onAddParticipantsBatch(50)}
-                  className="px-3.5 py-2 rounded-lg bg-[#22130d] hover:bg-[#311c13] border border-white/15 text-xs font-medium text-[#f5ead6] transition-colors whitespace-nowrap cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg bg-[#22130d] hover:bg-[#311c13] border border-white/15 text-xs font-medium text-[#f5ead6] transition-colors whitespace-nowrap cursor-pointer"
                 >
                   + Thêm 50 Phật tử
                 </button>
                 <button
                   type="button"
                   onClick={onResetDemo}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#3d1316] hover:bg-[#521a1e] border border-red-400/35 text-xs font-medium text-red-200 transition-colors whitespace-nowrap cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#3d1316] hover:bg-[#521a1e] border border-red-400/35 text-xs font-medium text-red-200 transition-colors whitespace-nowrap cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>Đặt lại Demo</span>
@@ -514,10 +739,10 @@ export function AdminDashboard({
               </div>
             </div>
 
-            {/* Section 4: Custom User Event Sender */}
+            {/* Section 5: Custom User Event Sender */}
             <div className="pt-4 border-t border-white/10">
               <h3 className="text-sm font-semibold text-[#ffe082]">
-                04. Giả Lập Tài Khoản Người Xem Tùy Chỉnh
+                05. Giả Lập Tài Khoản Người Xem Tùy Chỉnh
               </h3>
               <form onSubmit={handleSendCustomComment} className="space-y-2.5 mt-2.5">
                 <div>
@@ -589,320 +814,40 @@ export function AdminDashboard({
               </div>
 
               <div className="flex flex-wrap gap-1.5 mt-2">
-                {giftMappings.map((gm) => (
-                  <button
-                    key={gm.id}
-                    type="button"
-                    onClick={() => handleSendCustomGift(gm)}
-                    className="px-2.5 py-1 rounded bg-[#1f0c0f] hover:bg-[#2f1217] border border-[#d4af37]/30 text-[11px] text-[#f6d98e] cursor-pointer"
-                  >
-                    Tặng {gm.vietnameseLabel} (+{gm.points})
-                  </button>
-                ))}
+                {giftMappings
+                  .filter((gm) => gm.enabled)
+                  .map((gm) => (
+                    <button
+                      key={gm.giftId || gm.id}
+                      type="button"
+                      onClick={() => handleSendCustomGift(gm)}
+                      className="px-2.5 py-1 rounded bg-[#1f0c0f] hover:bg-[#2f1217] border border-[#d4af37]/30 text-[11px] text-[#f6d98e] cursor-pointer"
+                    >
+                      Tặng {gm.vietnameseLabel} (+{gm.points})
+                    </button>
+                  ))}
               </div>
             </div>
           </div>
         )}
 
         {/* ==========================================================================
-            2. ADMIN GIFT-MAPPING TABLE TAB ("🪷 CÚNG DƯỜNG CẦU AN")
+            2. DYNAMIC TIKTOK GIFT MANAGEMENT TAB ("QUẢN LÝ QUÀ TẶNG TIKTOK")
            ========================================================================== */}
         {activeTab === 'gifts' && (
-          <div className="space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold text-[#ffe082]">
-                  Bảng Ánh Xạ Quà Tặng TikTok &amp; &ldquo;🪷 CÚNG DƯỜNG CẦU AN&rdquo;
-                </h3>
-                <p className="text-[11px] text-[#b8a285] mt-0.5 leading-relaxed">
-                  Tên quà tiếng Việt và mệnh giá xu hiển thị trên bảng là cấu hình tham chiếu có thể chỉnh sửa; hệ thống đối chiếu sự kiện thực từ máy chủ bằng <strong>TikTok Gift ID</strong> và <strong>Gift Name</strong>.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  onUpdateGiftMappings(DEFAULT_GIFT_MAPPINGS.map((item) => ({ ...item })))
-                }
-                className="px-2.5 py-1.5 rounded-lg bg-[#261114] hover:bg-[#36181c] border border-[#d4af37]/35 text-[11px] text-[#ffe082] whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                Khôi phục mặc định
-              </button>
-            </div>
-
-            {/* Ceremony Queue Concurrency & 3D Effects Controls */}
-            <div className="rounded-xl bg-[#1b0b0e] border border-[#d4af37]/25 p-3 space-y-2.5 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-[#e6d5b8]">
-                  Số Phật tử hành lễ đồng thời tối đa tại bàn thờ
-                </label>
-                <span className="font-mono-tabular font-bold text-[#ffe082]">
-                  {overlaySettings.maxConcurrentCeremonies} người
-                </span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={5}
-                step={1}
-                value={overlaySettings.maxConcurrentCeremonies}
-                onChange={(e) =>
-                  onUpdateOverlaySettings({
-                    ...overlaySettings,
-                    maxConcurrentCeremonies: Number(e.target.value),
-                  })
-                }
-                className="w-full accent-[#d4af37]"
-              />
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-[11px] text-[#b8a285]">
-                  Hiệu ứng hạt sen vàng, cột sáng &amp; hào quang 3D
-                </span>
-                <input
-                  type="checkbox"
-                  checked={overlaySettings.effectsEnabled}
-                  onChange={(e) =>
-                    onUpdateOverlaySettings({
-                      ...overlaySettings,
-                      effectsEnabled: e.target.checked,
-                    })
-                  }
-                  className="accent-[#d4af37]"
-                />
-              </div>
-            </div>
-
-            {/* Editable 5-Row Gift Mapping Cards */}
-            <div className="space-y-3">
-              {giftMappings.map((gm, idx) => (
-                <div
-                  key={gm.id}
-                  className="rounded-xl bg-[#1a0b0d] border border-[#d4af37]/25 p-3.5 space-y-2.5 text-xs"
-                >
-                  <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
-                    <div className="min-w-0">
-                      <span className="font-display font-bold text-sm text-[#ffe082]">
-                        {gm.ceremonyTitle} – {gm.vietnameseLabel}
-                      </span>
-                      <span className="ml-2 text-[11px] font-mono-tabular text-[#cbb696]">
-                        ({gm.referenceCoins} xu · Đã nhận: {giftEventCounts[gm.id] ?? 0})
-                      </span>
-                    </div>
-                    <label className="flex items-center gap-1.5 text-[11px] text-[#e6d5b8] shrink-0 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={gm.enabled}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = { ...gm, enabled: e.target.checked };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="accent-[#d4af37]"
-                      />
-                      <span>Hiển thị</span>
-                    </label>
-                  </div>
-
-                  {/* Row 1: Ceremony Title + Reference Vietnamese Gift Label + Reference Xu */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Tên cầu nguyện
-                      </label>
-                      <input
-                        type="text"
-                        value={gm.ceremonyTitle}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = { ...gm, ceremonyTitle: e.target.value };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Tên lễ vật (Tham chiếu)
-                      </label>
-                      <input
-                        type="text"
-                        value={gm.vietnameseLabel}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = { ...gm, vietnameseLabel: e.target.value };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Xu hiển thị
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={99999}
-                        value={gm.referenceCoins}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = {
-                            ...gm,
-                            referenceCoins: Math.max(1, Number(e.target.value) || 1),
-                          };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 font-mono-tabular text-xs text-[#ffd978]"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Row 2: Actual Backend-Verified TikTok Gift ID + Gift Name + Merit Points */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        TikTok Gift ID thực
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        value={gm.giftId}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = {
-                            ...gm,
-                            giftId: Math.max(1, Number(e.target.value) || 1),
-                          };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-[#d4af37]/30 font-mono-tabular text-xs text-[#ffe28a]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        TikTok Gift Name
-                      </label>
-                      <input
-                        type="text"
-                        value={gm.giftName}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = { ...gm, giftName: e.target.value };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Điểm công đức
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={100000}
-                        value={gm.points}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = {
-                            ...gm,
-                            points: Math.max(1, Number(e.target.value) || 10),
-                          };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 font-mono-tabular text-xs text-[#fff4dc]"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Row 3: 3D Ritual Animation + Icon + Lotus Avatar Badge Title */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Nghi lễ 3D tại điện
-                      </label>
-                      <select
-                        value={gm.ritualType}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = {
-                            ...gm,
-                            ritualType: e.target.value as RitualActionType,
-                          };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                      >
-                        <option value="altar_flower">Dâng Hoa Hồng</option>
-                        <option value="altar_bell">Thỉnh Chuông Đồng</option>
-                        <option value="altar_fruit_tray">Dâng Mâm Ngũ Quả</option>
-                        <option value="altar_lotus_pedestal">Dâng Đài Sen Vàng</option>
-                        <option value="altar_pagoda">Đại Lễ Bảo Tháp</option>
-                        <option value="altar_incense">Thắp Hương Cầu An</option>
-                        <option value="altar_lantern">Thả Hoa Đăng</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Biểu tượng
-                      </label>
-                      <select
-                        value={gm.iconType}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = {
-                            ...gm,
-                            iconType: e.target.value as GiftIconType,
-                          };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                      >
-                        <option value="rose">Hoa Hồng</option>
-                        <option value="bell">Chuông Đồng</option>
-                        <option value="fruit">Mâm Quả</option>
-                        <option value="lotus">Đài Sen</option>
-                        <option value="pagoda">Bảo Tháp</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                        Nhãn Hoa Sen Avatar
-                      </label>
-                      <input
-                        type="text"
-                        value={gm.badgeCeremonyLabel}
-                        onChange={(e) => {
-                          const next = [...giftMappings];
-                          next[idx] = { ...gm, badgeCeremonyLabel: e.target.value };
-                          onUpdateGiftMappings(next);
-                        }}
-                        className="w-full px-2 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Row 4: VieNeuTTS Automatic Announcement Template */}
-                  <div>
-                    <label className="block text-[10.5px] text-[#b8a285] mb-1">
-                      Lời chúc tự động VieNeuTTS khi hành lễ ({'{username}'})
-                    </label>
-                    <input
-                      type="text"
-                      value={gm.ttsTemplate}
-                      onChange={(e) => {
-                        const next = [...giftMappings];
-                        next[idx] = { ...gm, ttsTemplate: e.target.value };
-                        onUpdateGiftMappings(next);
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded bg-[#0c0506] border border-white/15 text-xs text-[#fff4dc]"
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <GiftManagementPanel
+            registrySnapshot={registrySnapshot}
+            giftEventCounts={giftEventCounts}
+            overlaySettings={overlaySettings}
+            onUpdateOverlaySettings={onUpdateOverlaySettings}
+            onTestGiftInDemo={(gm, openSimTab) => {
+              setSimulatorGiftId(gm.giftId);
+              onSimulateGiftMapping(gm);
+              if (openSimTab) {
+                setActiveTab('demo');
+              }
+            }}
+          />
         )}
 
         {/* ==========================================================================
@@ -1010,7 +955,7 @@ export function AdminDashboard({
         )}
 
         {/* ==========================================================================
-            4. VOICE AI / VIENEU PRIMARY TTS TAB
+            4. VOICE AI / VIENEU PRIMARY TTS + GIFT-FIRST PRIORITY + COMMENT VOICE
            ========================================================================== */}
         {activeTab === 'voice' && (
           <div className="space-y-5 text-xs">
@@ -1019,7 +964,7 @@ export function AdminDashboard({
                 <div className="flex items-center gap-2 min-w-0">
                   <Activity className="w-4 h-4 text-[#ffe082] shrink-0" />
                   <span className="font-semibold text-[#ffe082] truncate">
-                    Trạng Thái Voice API &amp; Âm Thanh
+                    Trạng Thái Voice API &amp; Hàng Đợi Ưu Tiên
                   </span>
                 </div>
 
@@ -1076,6 +1021,16 @@ export function AdminDashboard({
                   </span>
                 </div>
 
+                <div className="flex justify-between gap-2">
+                  <span className="text-[#b8a285]">Đang phát / Hàng đợi ưu tiên:</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {voiceSnapshot.isSpeaking
+                      ? `Mức ưu tiên #${voiceSnapshot.currentPriority ?? 1}`
+                      : 'Đang rảnh'}{' '}
+                    · Chờ: {voiceSnapshot.queueLength}
+                  </span>
+                </div>
+
                 {voiceSettings.provider === 'vieneu' && voiceSettings.vieneuMode === 'cloud' && (
                   <div className="flex justify-between gap-2">
                     <span className="text-[#b8a285]">Khóa VIENEU_API_KEY (Secrets):</span>
@@ -1092,20 +1047,374 @@ export function AdminDashboard({
                     </span>
                   </div>
                 )}
-
-                {connectionSnapshot.availableServerTts.vieneuEnvUrlWasLocalhost &&
-                  voiceSettings.vieneuMode === 'cloud' && (
-                    <p className="text-[10.5px] text-[#cbb696]">
-                      • Đã tự động dùng endpoint đám mây chuẩn{' '}
-                      <code className="text-[#f3d892]">api.vieneu.io/api/v1/audio/speech</code>.
-                    </p>
-                  )}
               </div>
 
               {voiceSnapshot.lastWarning && (
                 <div className="rounded-lg bg-[#2e1412] border border-red-400/35 px-3 py-2 text-[11px] text-red-200 leading-relaxed">
                   <span className="font-semibold">Chi tiết lỗi TTS:</span> {voiceSnapshot.lastWarning}
                 </div>
+              )}
+            </div>
+
+            {/* ==========================================================================
+                CÔNG THỨC ĐỌC BÌNH LUẬN (CUSTOM COMMENT VOICE FORMULA & QUEUE CONTROLS)
+               ========================================================================== */}
+            <div className="rounded-xl bg-gradient-to-b from-[#250c12] to-[#16080b] border border-[#d4af37]/45 p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-[#ffe28a] tracking-wide">
+                    CÔNG THỨC ĐỌC BÌNH LUẬN
+                  </h3>
+                  <p className="text-[10.5px] text-[#cbb696] mt-0.5">
+                    VieNeuTTS đọc chính xác nguyên văn bình luận gốc của Phật tử — không tự ý tóm tắt hay thay thế.
+                  </p>
+                </div>
+
+                <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d0605] border border-[#d4af37]/35 cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={voiceSettings.commentVoiceEnabled}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        commentVoiceEnabled: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37] w-3.5 h-3.5"
+                  />
+                  <span className="text-[11px] font-semibold text-[#ffe082]">
+                    {voiceSettings.commentVoiceEnabled ? 'Đang bật' : 'Đã tắt'}
+                  </span>
+                </label>
+              </div>
+
+              {/* Editable Formula Template */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[11px] font-medium text-[#e6d5b8]">
+                    Mẫu công thức đọc (Hỗ trợ <code className="text-[#ffe082]">{'{username}'}</code> &amp;{' '}
+                    <code className="text-[#ffe082]">{'{comment}'}</code>)
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          commentVoiceFormula: `${voiceSettings.commentVoiceFormula} {username}`.trim(),
+                        })
+                      }
+                      className="px-1.5 py-0.5 rounded bg-[#2c1218] hover:bg-[#3d1921] border border-[#d4af37]/30 text-[10px] text-[#ffe082] cursor-pointer"
+                    >
+                      + {'{username}'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          commentVoiceFormula: `${voiceSettings.commentVoiceFormula} {comment}`.trim(),
+                        })
+                      }
+                      className="px-1.5 py-0.5 rounded bg-[#2c1218] hover:bg-[#3d1921] border border-[#d4af37]/30 text-[10px] text-[#ffe082] cursor-pointer"
+                    >
+                      + {'{comment}'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          commentVoiceFormula: DEFAULT_COMMENT_VOICE_FORMULA,
+                        })
+                      }
+                      className="px-1.5 py-0.5 rounded bg-[#1f100b] hover:bg-[#2d1810] border border-white/15 text-[10px] text-[#cbb696] cursor-pointer"
+                    >
+                      Mặc định
+                    </button>
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  value={voiceSettings.commentVoiceFormula}
+                  onChange={(e) =>
+                    onUpdateVoiceSettings({
+                      ...voiceSettings,
+                      commentVoiceFormula: e.target.value,
+                    })
+                  }
+                  placeholder={DEFAULT_COMMENT_VOICE_FORMULA}
+                  className="w-full px-3 py-2 rounded-lg bg-[#0b0604] border border-[#d4af37]/40 text-xs text-[#fff6e5] focus:outline-none focus:border-[#ffe082]"
+                />
+              </div>
+
+              {/* Live Preview Showing Exact Text Sent to VieNeuTTS */}
+              <div className="rounded-lg bg-[#0e0607] border border-[#d4af37]/30 p-2.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-[#ffe082]">
+                    Xem Trước Trực Tiếp Nội Dung Gửi Tới VieNeuTTS
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormulaPreviewUsername('Minh Anh');
+                        setFormulaPreviewComment('Con cầu cho mẹ luôn mạnh khỏe');
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-[#241015] border border-[#d4af37]/25 text-[10px] text-[#e6d5b8] hover:text-[#ffe082] cursor-pointer"
+                    >
+                      Mẫu 1
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormulaPreviewUsername('Hoàng Nam');
+                        setFormulaPreviewComment('Nam mô A Di Đà Phật');
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-[#241015] border border-[#d4af37]/25 text-[10px] text-[#e6d5b8] hover:text-[#ffe082] cursor-pointer"
+                    >
+                      Mẫu 2
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  <input
+                    type="text"
+                    value={formulaPreviewUsername}
+                    onChange={(e) => setFormulaPreviewUsername(e.target.value)}
+                    placeholder="Tên người xem"
+                    className="col-span-1 px-2 py-1 rounded bg-[#080403] border border-white/10 text-[11px] text-[#fff6e5]"
+                  />
+                  <input
+                    type="text"
+                    value={formulaPreviewComment}
+                    onChange={(e) => setFormulaPreviewComment(e.target.value)}
+                    placeholder="Nội dung bình luận mẫu"
+                    className="col-span-2 px-2 py-1 rounded bg-[#080403] border border-white/10 text-[11px] text-[#fff6e5]"
+                  />
+                </div>
+
+                {commentFormulaPreview.allowed ? (
+                  <div className="rounded bg-[#1b0b0f] border border-[#d4af37]/35 px-2.5 py-1.5">
+                    <p className="text-[10px] text-[#b8a285] mb-0.5">Chuỗi đọc chính xác:</p>
+                    <p className="font-display text-xs italic text-[#fff6df] leading-snug">
+                      “{commentFormulaPreview.text}”
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded bg-[#2b1111] border border-red-400/35 px-2.5 py-1.5 text-[11px] text-red-200">
+                    Bình luận này sẽ được bỏ qua an toàn (không tự sửa chữ):{' '}
+                    <strong>
+                      {commentFormulaPreview.reason === 'exceeds_max_length'
+                        ? `Vượt quá giới hạn ${voiceSettings.maxCommentLength} ký tự`
+                        : commentFormulaPreview.reason === 'unsafe_or_spam'
+                          ? 'Chứa đường dẫn / spam / từ khóa không phù hợp'
+                          : 'Bình luận quá ngắn hoặc không chứa chữ cái'}
+                    </strong>
+                  </div>
+                )}
+              </div>
+
+              {/* Volume, Cooldown, Max Length & Queue Settings */}
+              <div className="space-y-2.5 pt-1">
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[11px] text-[#e6d5b8]">Âm lượng giọng đọc</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {Math.round(voiceSettings.volume * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={voiceSettings.volume}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        volume: Number(e.target.value),
+                      })
+                    }
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[10.5px] text-[#cbb696] mb-1">
+                      Giãn cách giữa 2 bình luận (giây)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={60}
+                      step={0.5}
+                      value={voiceSettings.commentCooldownSec}
+                      onChange={(e) =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          commentCooldownSec: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="w-full px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-[#fff4dc]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] text-[#cbb696] mb-1">
+                      Giãn cách mỗi tài khoản (giây)
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={120}
+                      value={voiceSettings.perUserCommentCooldownSec}
+                      onChange={(e) =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          perUserCommentCooldownSec: Math.max(2, Number(e.target.value) || 10),
+                        })
+                      }
+                      className="w-full px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-[#fff4dc]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] text-[#cbb696] mb-1">
+                      Độ dài bình luận tối đa (ký tự)
+                    </label>
+                    <input
+                      type="number"
+                      min={20}
+                      max={220}
+                      value={voiceSettings.maxCommentLength}
+                      onChange={(e) =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          maxCommentLength: Math.max(20, Math.min(220, Number(e.target.value) || 90)),
+                        })
+                      }
+                      className="w-full px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-[#fff4dc]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] text-[#cbb696] mb-1">
+                      Hàng đợi bình luận tối đa
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={voiceSettings.maxCommentQueueSize}
+                      onChange={(e) =>
+                        onUpdateVoiceSettings({
+                          ...voiceSettings,
+                          maxCommentQueueSize: Math.max(
+                            1,
+                            Math.min(12, Number(e.target.value) || 5),
+                          ),
+                        })
+                      }
+                      className="w-full px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-[#fff4dc]"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-[#cbb696]">
+                    Hủy bình luận chờ quá lâu (giây)
+                  </span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={90}
+                    value={voiceSettings.staleCommentTimeoutSec}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        staleCommentTimeoutSec: Math.max(5, Math.min(90, Number(e.target.value) || 20)),
+                      })
+                    }
+                    className="w-20 px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-right text-[#fff4dc]"
+                  />
+                </div>
+
+                <label className="flex items-center justify-between gap-2 cursor-pointer">
+                  <span className="text-[11px] text-[#e6d5b8]">
+                    Bỏ qua bình luận chứa link, spam ký tự lặp hoặc từ ngữ nhạy cảm
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={voiceSettings.blockSpamLinksAndUnsafe}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        blockSpamLinksAndUnsafe: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37]"
+                  />
+                </label>
+
+                <div className="pt-1 border-t border-white/10 space-y-1.5">
+                  <label className="block text-[11px] font-semibold text-[#ffe082]">
+                    Thứ Tự Hàng Đợi Ưu Tiên: Quà Lớn &gt; Quà Thường &gt; Nghi Lễ &gt; Bình Luận &gt; Lời Chúc Nền
+                  </label>
+                  <select
+                    value={voiceSettings.giftInterruptPolicy}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        giftInterruptPolicy: e.target.value as GiftInterruptPolicy,
+                      })
+                    }
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-[#0b0604] border border-white/15 text-[11px] text-[#fff6e5]"
+                  >
+                    <option value="interrupt_comments">
+                      Ngắt nhẹ bình luận đang đọc để phát Quà tặng ngay lập tức (Mặc định)
+                    </option>
+                    <option value="finish_current">
+                      Đọc nốt câu hiện tại rồi phát toàn bộ Quà tặng trước các bình luận chờ
+                    </option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Test Voice & Save Settings Buttons */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onTestVoice(
+                      commentFormulaPreview.allowed
+                        ? commentFormulaPreview.text
+                        : 'Phật tử Minh Anh gửi lời nguyện: Con cầu cho mẹ luôn mạnh khỏe',
+                    )
+                  }
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#2a1419] hover:bg-[#3b1b22] border border-[#d4af37]/45 text-xs font-semibold text-[#ffe28a] transition-colors cursor-pointer"
+                >
+                  <Volume2 className="w-3.5 h-3.5" />
+                  <span>Nghe thử câu xem trước</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveCommentFormulaSettings}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#d4af37] hover:bg-[#e5c14b] text-[#180d06] text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Lưu cài đặt</span>
+                </button>
+              </div>
+
+              {voiceSavedBanner && (
+                <p className="text-[11px] text-[#9ef0b4] bg-[#132918] border border-[#499e5b]/45 rounded-lg px-3 py-1.5">
+                  {voiceSavedBanner}
+                </p>
               )}
             </div>
 
@@ -1144,7 +1453,6 @@ export function AdminDashboard({
                 </select>
               </div>
 
-              {/* VieNeu CLOUD vs LOCAL Mode Selector */}
               {voiceSettings.provider === 'vieneu' && (
                 <div className="space-y-3 rounded-xl bg-[#180c0d] border border-white/10 p-3.5">
                   <label className="block text-[#e6d5b8] font-medium">
@@ -1229,7 +1537,6 @@ export function AdminDashboard({
                     </div>
                   )}
 
-                  {/* Available VieNeu Voice Selector */}
                   <div className="space-y-1.5 pt-1 border-t border-white/10">
                     <div className="flex items-center justify-between">
                       <label className="text-[#cbb696] font-medium">
@@ -1281,41 +1588,6 @@ export function AdminDashboard({
                   </div>
                 </div>
               )}
-
-              {/* Custom Voice ID & Gender */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[#cbb696] mb-1">Mã giọng (Voice ID tùy chỉnh)</label>
-                  <input
-                    type="text"
-                    value={voiceSettings.voiceId}
-                    onChange={(e) =>
-                      onUpdateVoiceSettings({
-                        ...voiceSettings,
-                        voiceId: e.target.value,
-                      })
-                    }
-                    placeholder="Ngọc Lan"
-                    className="w-full px-3 py-2 rounded-lg bg-[#0b0604] border border-white/15 text-[#fff6e5]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[#cbb696] mb-1">Âm sắc ưu tiên</label>
-                  <select
-                    value={voiceSettings.gender}
-                    onChange={(e) =>
-                      onUpdateVoiceSettings({
-                        ...voiceSettings,
-                        gender: e.target.value as 'female' | 'male',
-                      })
-                    }
-                    className="w-full px-3 py-2 rounded-lg bg-[#0b0604] border border-white/15 text-[#fff6e5]"
-                  >
-                    <option value="female">Nữ dịu dàng, trầm ấm</option>
-                    <option value="male">Nam điềm đạm, trang nghiêm</option>
-                  </select>
-                </div>
-              </div>
 
               {/* Volume & Speed Sliders */}
               <div className="grid grid-cols-2 gap-4 pt-1">
@@ -1380,7 +1652,7 @@ export function AdminDashboard({
 
                 <button
                   type="button"
-                  onClick={onTestVoice}
+                  onClick={() => onTestVoice()}
                   className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#26160c] hover:bg-[#362012] border border-[#d4af37]/40 text-xs font-medium text-[#fff4dc] transition-colors whitespace-nowrap cursor-pointer"
                 >
                   <Volume2 className="w-3.5 h-3.5 text-[#ffe082]" />
@@ -1413,43 +1685,6 @@ export function AdminDashboard({
                 </div>
               )}
 
-              {/* Background Đàn Tranh Music Volume */}
-              <div className="pt-3 border-t border-white/10">
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="flex items-center gap-2 text-[#f5ead6] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={voiceSettings.bgMusicEnabled}
-                      onChange={(e) =>
-                        onUpdateVoiceSettings({
-                          ...voiceSettings,
-                          bgMusicEnabled: e.target.checked,
-                        })
-                      }
-                      className="accent-[#d4af37]"
-                    />
-                    <span>Nhạc thiền Đàn Tranh (Tự giảm âm khi đọc)</span>
-                  </label>
-                  <span className="font-mono-tabular text-[#ffe082]">
-                    {Math.round(voiceSettings.bgMusicVolume * 100)}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={0.6}
-                  step={0.02}
-                  value={voiceSettings.bgMusicVolume}
-                  onChange={(e) =>
-                    onUpdateVoiceSettings({
-                      ...voiceSettings,
-                      bgMusicVolume: Number(e.target.value),
-                    })
-                  }
-                  className="w-full accent-[#d4af37]"
-                />
-              </div>
-
               {/* Automatic Voice Behavior Toggles */}
               <div className="pt-3 border-t border-white/10 space-y-2.5">
                 <label className="flex items-center justify-between cursor-pointer">
@@ -1463,23 +1698,6 @@ export function AdminDashboard({
                       onUpdateVoiceSettings({
                         ...voiceSettings,
                         autoNarrationEnabled: e.target.checked,
-                      })
-                    }
-                    className="accent-[#d4af37]"
-                  />
-                </label>
-
-                <label className="flex items-center justify-between cursor-pointer">
-                  <span className="text-[#e6d5b8]">
-                    Dùng giọng trình duyệt dự phòng khi VieNeu chưa sẵn sàng
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={voiceSettings.browserFallbackEnabled}
-                    onChange={(e) =>
-                      onUpdateVoiceSettings({
-                        ...voiceSettings,
-                        browserFallbackEnabled: e.target.checked,
                       })
                     }
                     className="accent-[#d4af37]"
@@ -1504,6 +1722,40 @@ export function AdminDashboard({
                 </label>
 
                 <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-[#ffe082] font-medium">
+                    Đọc bình luận có lời cầu nguyện (theo Công Thức Đọc Bình Luận)
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={voiceSettings.prayerAnnouncementsEnabled}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        prayerAnnouncementsEnabled: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37]"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-[#e6d5b8]">
+                    Đọc cả bình luận thường hợp lệ (theo Công Thức Đọc Bình Luận)
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={voiceSettings.commentAnnouncementsEnabled}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        commentAnnouncementsEnabled: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37]"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between cursor-pointer pt-1">
                   <span className="text-[#e6d5b8]">Chào mừng Phật tử bình luận lần đầu</span>
                   <input
                     type="checkbox"
@@ -1518,24 +1770,22 @@ export function AdminDashboard({
                   />
                 </label>
 
-                {voiceSettings.welcomeAnnouncementsEnabled && (
-                  <div className="pt-0.5">
-                    <label className="block text-[11px] text-[#cbb696] mb-1">
-                      Mẫu câu chào mừng Phật tử mới ({'{username}'})
-                    </label>
-                    <input
-                      type="text"
-                      value={voiceSettings.welcomeTemplate}
-                      onChange={(e) =>
-                        onUpdateVoiceSettings({
-                          ...voiceSettings,
-                          welcomeTemplate: e.target.value,
-                        })
-                      }
-                      className="w-full px-2.5 py-1.5 rounded bg-[#0b0604] border border-white/15 text-xs text-[#fff6e5]"
-                    />
-                  </div>
-                )}
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-[#e6d5b8]">
+                    Đùng giọng trình duyệt dự phòng khi VieNeu chưa sẵn sàng
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={voiceSettings.browserFallbackEnabled}
+                    onChange={(e) =>
+                      onUpdateVoiceSettings({
+                        ...voiceSettings,
+                        browserFallbackEnabled: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37]"
+                  />
+                </label>
 
                 <label className="flex items-center justify-between cursor-pointer">
                   <span className="text-[#e6d5b8]">
@@ -1554,37 +1804,41 @@ export function AdminDashboard({
                   />
                 </label>
 
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <span className="text-[#cbb696]">Chu kỳ lời chúc nền (giây)</span>
+                <div className="pt-2 border-t border-white/10">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="flex items-center gap-2 text-[#f5ead6] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={voiceSettings.bgMusicEnabled}
+                        onChange={(e) =>
+                          onUpdateVoiceSettings({
+                            ...voiceSettings,
+                            bgMusicEnabled: e.target.checked,
+                          })
+                        }
+                        className="accent-[#d4af37]"
+                      />
+                      <span>Nhạc thiền Đàn Tranh (Tự giảm âm khi đọc)</span>
+                    </label>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {Math.round(voiceSettings.bgMusicVolume * 100)}%
+                    </span>
+                  </div>
                   <input
-                    type="number"
-                    min={30}
-                    max={600}
-                    value={voiceSettings.backgroundIntervalSec}
+                    type="range"
+                    min={0}
+                    max={0.6}
+                    step={0.02}
+                    value={voiceSettings.bgMusicVolume}
                     onChange={(e) =>
                       onUpdateVoiceSettings({
                         ...voiceSettings,
-                        backgroundIntervalSec: Math.max(30, Number(e.target.value) || 120),
+                        bgMusicVolume: Number(e.target.value),
                       })
                     }
-                    className="w-20 px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-right text-[#fff4dc]"
+                    className="w-full accent-[#d4af37]"
                   />
                 </div>
-
-                <label className="flex items-center justify-between cursor-pointer pt-1">
-                  <span className="text-[#cbb696]">Biến thiên lời chúc bằng AI (Gemini)</span>
-                  <input
-                    type="checkbox"
-                    checked={voiceSettings.useAiPeacefulMessages}
-                    onChange={(e) =>
-                      onUpdateVoiceSettings({
-                        ...voiceSettings,
-                        useAiPeacefulMessages: e.target.checked,
-                      })
-                    }
-                    className="accent-[#d4af37]"
-                  />
-                </label>
               </div>
 
               {/* Custom Peaceful Narration Messages */}
@@ -1622,29 +1876,36 @@ export function AdminDashboard({
         )}
 
         {/* ==========================================================================
-            5. CHARACTERS & SEATING TAB
+            5. CHARACTERS, 200-SEAT 9:16 LAYOUT & 120-SECOND INACTIVITY TIMEOUT TAB
            ========================================================================== */}
         {activeTab === 'characters' && (
           <div className="space-y-5">
-            <div className="space-y-2.5 text-xs">
+            <div className="space-y-2 text-xs">
               <h3 className="text-sm font-semibold text-[#ffe082]">
-                Quản Lý Phật Tử &amp; Sơ Đồ 200 Đệm Lễ Phật
+                Quản Lý Phật Tử, 200 Đệm Khung 9:16 &amp; Tự Động Rời Điện 120s
               </h3>
               <div className="flex justify-between py-1.5 border-b border-white/5">
-                <span className="text-[#b8a285]">Số nhân vật 3D đang hiển thị</span>
+                <span className="text-[#b8a285]">Phật tử đang hiện diện trong điện 3D</span>
                 <span className="font-mono-tabular font-semibold text-[#ffe082]">
                   {participantsCount}
+                  {departingCount > 0 ? ` (${departingCount} đang rời điện)` : ''}
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-white/5">
-                <span className="text-[#b8a285]">Đệm ngồi chính đã lấp đầy</span>
+                <span className="text-[#b8a285]">Đệm ngồi chính trong khung 9:16</span>
                 <span className="font-mono-tabular text-[#f5ead6]">
                   {occupiedMainSeats} / {TOTAL_MAIN_MATS}
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-white/5">
-                <span className="text-[#b8a285]">Khu vực mở rộng / Hàng chờ</span>
+                <span className="text-[#b8a285]">Hàng chờ mở rộng (201+ tối ưu hiệu năng)</span>
                 <span className="font-mono-tabular text-[#f5ead6]">{waitingOverflowCount}</span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-white/5">
+                <span className="text-[#b8a285]">Sổ Công Đức phiên LIVE (Bảo toàn khi rời)</span>
+                <span className="font-mono-tabular text-[#98ebb0]">
+                  {sessionMeritUsersCount} người (Đã rời: {departedUsersCount})
+                </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-white/5">
                 <span className="text-[#b8a285]">Tổng lượt thích / Tổng tiếng mõ</span>
@@ -1655,19 +1916,107 @@ export function AdminDashboard({
               </div>
             </div>
 
-            <div className="space-y-3 pt-1">
+            {/* Required Inactivity Timeout Admin Configuration */}
+            <div className="rounded-xl bg-[#1a0b0e] border border-[#d4af37]/30 p-3.5 space-y-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-[#ffe082]">
+                  Tự Động Cáo Lễ Rời Chánh Điện Sau 2 Phút (120 Giây)
+                </span>
+                <input
+                  type="checkbox"
+                  checked={overlaySettings.inactivityTimeoutEnabled}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      inactivityTimeoutEnabled: e.target.checked,
+                    })
+                  }
+                  className="accent-[#d4af37] w-4 h-4"
+                />
+              </div>
+
+              <p className="text-[11px] text-[#b8a285] leading-relaxed">
+                Khi không gửi bình luận, quà, like, follow hoặc share trong 120s, nhân vật đứng dậy cúi chào Đức Phật, bước ra cửa chùa và nhường lại đệm ngồi (điểm Bảng Công Đức vẫn được giữ nguyên).
+              </p>
+
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[#e6d5b8]">Thời gian chờ không tương tác (giây)</label>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={15}
+                    max={3600}
+                    value={overlaySettings.inactivityTimeoutSec}
+                    onChange={(e) =>
+                      onUpdateOverlaySettings({
+                        ...overlaySettings,
+                        inactivityTimeoutSec: Math.max(15, Number(e.target.value) || 120),
+                      })
+                    }
+                    className="w-20 px-2.5 py-1 rounded bg-[#0b0604] border border-white/15 font-mono-tabular text-right text-[#ffe082]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateOverlaySettings({
+                        ...overlaySettings,
+                        inactivityTimeoutSec: 120,
+                        demoAcceleratedTimeout: false,
+                      })
+                    }
+                    className="px-2 py-1 rounded bg-[#291318] hover:bg-[#3a1a22] border border-[#d4af37]/35 text-[10.5px] text-[#ffe082] cursor-pointer"
+                  >
+                    Chuẩn 120s
+                  </button>
+                </div>
+              </div>
+
+              <label className="flex items-center justify-between gap-2 pt-1 border-t border-white/10 cursor-pointer">
+                <span className="text-[#cbb696]">
+                  Tăng tốc kiểm thử Demo (12s — không sửa cấu hình 120s)
+                </span>
+                <input
+                  type="checkbox"
+                  checked={overlaySettings.demoAcceleratedTimeout}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      demoAcceleratedTimeout: e.target.checked,
+                    })
+                  }
+                  className="accent-[#d4af37]"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={handleManualRemoveClick}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-[#2e1016] hover:bg-[#40161f] border border-[#d4af37]/45 text-xs font-semibold text-[#ffe28a] transition-colors cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Mời Các Phật Tử Không Tương Tác Rời Điện Thủ Công</span>
+              </button>
+
+              {manualDepartFeedback && (
+                <p className="text-[11px] text-[#ffe28a]">{manualDepartFeedback}</p>
+              )}
+            </div>
+
+            <div className="space-y-2.5 pt-1">
               <div className="flex justify-between text-xs">
-                <label className="text-[#cbb696]">Giới hạn nhân vật hiển thị đồng thời</label>
+                <label className="text-[#cbb696]">
+                  Giới hạn nhân vật 3D hiển thị trên đệm chính (Tối đa {TOTAL_MAIN_MATS} đệm + Hàng chờ 200+)
+                </label>
                 <span className="font-mono-tabular text-[#ffe082]">
-                  {overlaySettings.maxParticipants}
+                  {Math.min(TOTAL_MAIN_MATS, overlaySettings.maxParticipants)}
                 </span>
               </div>
               <input
                 type="range"
-                min={30}
-                max={250}
-                step={10}
-                value={overlaySettings.maxParticipants}
+                min={24}
+                max={TOTAL_MAIN_MATS}
+                step={8}
+                value={Math.min(TOTAL_MAIN_MATS, overlaySettings.maxParticipants)}
                 onChange={(e) =>
                   onUpdateOverlaySettings({
                     ...overlaySettings,
@@ -1680,7 +2029,7 @@ export function AdminDashboard({
 
             <div className="space-y-2 pt-1">
               <label className="block text-xs text-[#cbb696]">
-                Mức đồ họa 3D (Tối ưu mượt cho phát trực tiếp dài giờ)
+                Mức đồ họa 3D (Tối ưu mượt cho MacBook M1 8GB phát LIVE dài giờ)
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {(['low', 'medium', 'high'] as QualityPreset[]).map((q) => (
@@ -1721,24 +2070,105 @@ export function AdminDashboard({
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#3c1515] hover:bg-[#521d1d] border border-red-400/30 text-xs font-medium text-red-200 transition-colors whitespace-nowrap cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Xóa toàn bộ Phật tử</span>
+                <span>Đặt lại toàn bộ phiên</span>
               </button>
             </div>
           </div>
         )}
 
         {/* ==========================================================================
-            6. STREAMING / OBS SETTINGS TAB
+            6. STREAMING / OBS & GOLDEN BUDDHA GLB/GLTF ASSET CONFIGURATION TAB
            ========================================================================== */}
         {activeTab === 'streaming' && (
           <div className="space-y-5 text-xs">
             <div>
               <h3 className="text-sm font-semibold text-[#ffe082]">
-                Cấu Hình Giao Diện TikTok LIVE (9:16) &amp; OBS
+                Cấu Hình Khung 9:16, OBS &amp; Tôn Tượng Đức Phật Vàng 3D
               </h3>
               <p className="text-xs text-[#b8a285] mt-1 leading-relaxed">
-                Bố cục chuẩn 1080×1920 giữ tôn tượng Đức Phật Vàng hoàn toàn thông thoáng ở trung tâm, hai bảng nằm gọn góc trên trái/phải.
+                Tôn tượng Đức Phật Vàng hiển thị trọn vẹn 100% từ đỉnh hào quang đến đài sen trong khung 9:16, không bị bất kỳ bảng hay nhãn nào che khuất.
               </p>
+            </div>
+
+            {/* Configurable GLB/GLTF Buddha Model Path + Built-in Sculpted Fallback */}
+            <div className="rounded-xl bg-[#1a0b0e] border border-[#d4af37]/30 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-[#ffe082]">
+                  Mô Hình Tôn Tượng Đức Phật (GLB / GLTF hoặc Điêu Khắc Tích Hợp)
+                </span>
+                <span
+                  className={`text-[10.5px] font-semibold ${
+                    buddhaModelStatus === 'loaded'
+                      ? 'text-[#8ee6a8]'
+                      : buddhaModelStatus === 'fallback_error'
+                        ? 'text-[#f6d375]'
+                        : 'text-[#e6d5b8]'
+                  }`}
+                >
+                  {buddhaModelStatus === 'loaded'
+                    ? 'GLB tùy chỉnh'
+                    : buddhaModelStatus === 'loading'
+                      ? 'Đang tải...'
+                      : 'Điêu khắc 3D tích hợp'}
+                </span>
+              </div>
+
+              <p className="text-[11px] text-[#cbb696] leading-snug">{buddhaModelDetail}</p>
+
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={buddhaUrlDraft}
+                  onChange={(e) => setBuddhaUrlDraft(e.target.value)}
+                  placeholder="/models/buddha.glb hoặc URL .glb/.gltf..."
+                  className="flex-1 px-2.5 py-1.5 rounded bg-[#0b0604] border border-white/15 text-xs text-[#fff6e5]"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      buddhaModelUrl: buddhaUrlDraft.trim(),
+                    })
+                  }
+                  className="px-3 py-1.5 rounded bg-[#d4af37] hover:bg-[#e5c14b] text-[#180d06] font-semibold whitespace-nowrap cursor-pointer"
+                >
+                  Áp dụng
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <label className="flex items-center gap-2 text-[#e6d5b8] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={overlaySettings.buddhaGoldOverride}
+                    onChange={(e) =>
+                      onUpdateOverlaySettings({
+                        ...overlaySettings,
+                        buddhaGoldOverride: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37]"
+                  />
+                  <span>Phủ vật liệu Vàng 24K PBR lên tệp GLB ngoài</span>
+                </label>
+
+                {overlaySettings.buddhaModelUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBuddhaUrlDraft('');
+                      onUpdateOverlaySettings({
+                        ...overlaySettings,
+                        buddhaModelUrl: '',
+                      });
+                    }}
+                    className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                  >
+                    Dùng tượng tích hợp
+                  </button>
+                )}
+              </div>
             </div>
 
             <button
@@ -1753,6 +2183,98 @@ export function AdminDashboard({
             >
               Mở Chế Độ Toàn Màn Hình OBS (Ẩn Quản Trị)
             </button>
+
+            {/* Global Panel Size & RGBA Opacity Controls */}
+            <div className="rounded-xl bg-gradient-to-b from-[#250b11] to-[#16080b] border border-[#d4af37]/40 p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Sliders className="w-4 h-4 text-[#ffe082]" />
+                  <span className="font-semibold text-[#ffe082]">
+                    Kích Thước &amp; Độ Trong Suốt Nền RGBA Toàn Cục
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      panelScale: 0.9,
+                      panelOpacity: 0.55,
+                    })
+                  }
+                  className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                >
+                  Chuẩn 90% · 0.55
+                </button>
+              </div>
+
+              <p className="text-[11px] text-[#cbb696] leading-relaxed">
+                Sử dụng màu nền RGBA bán trong suốt (chuẩn <span className="font-mono-tabular text-[#ffe082]">0.50–0.60</span>) thay vì CSS opacity toàn phần để chữ vàng/kem luôn sắc nét 100% và không bao giờ che tượng Phật.
+              </p>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[11px] text-[#e6d5b8]">Kích thước thu phóng bảng UI</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {Math.round((overlaySettings.panelScale ?? 0.9) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.7}
+                  max={1.15}
+                  step={0.02}
+                  value={overlaySettings.panelScale ?? 0.9}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      panelScale: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[11px] text-[#e6d5b8]">
+                    Độ đậm nền RGBA (Khuyên dùng 0.50–0.60)
+                  </span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {(overlaySettings.panelOpacity ?? 0.55).toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.25}
+                  max={0.88}
+                  step={0.01}
+                  value={overlaySettings.panelOpacity ?? 0.55}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      panelOpacity: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveOverlayStyleSettings}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-[#d4af37] hover:bg-[#e5c14b] text-[#180d06] text-xs font-bold transition-colors cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Lưu cấu hình giao diện</span>
+              </button>
+
+              {overlaySavedBanner && (
+                <p className="text-[11px] text-[#9ef0b4] bg-[#132918] border border-[#499e5b]/45 rounded-lg px-3 py-1.5">
+                  {overlaySavedBanner}
+                </p>
+              )}
+            </div>
 
             <div className="space-y-3 pt-2 border-t border-white/10">
               <label className="flex items-center justify-between cursor-pointer">
@@ -1772,7 +2294,7 @@ export function AdminDashboard({
 
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="text-[#ffe082] font-medium">
-                  Hiển thị bảng &ldquo;🪷 Cúng Dường Cầu An&rdquo; (Góc trên phải)
+                  Hiển thị bảng thu gọn &ldquo;Cúng Dường Cầu An&rdquo; (Sát mép phải)
                 </span>
                 <input
                   type="checkbox"
@@ -1789,7 +2311,7 @@ export function AdminDashboard({
 
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="text-[#ffe082] font-medium">
-                  Hiển thị &ldquo;Bảng Công Đức&rdquo; (Góc trên trái · Top 4 + Cuộn)
+                  Hiển thị &ldquo;Bảng Công Đức&rdquo; thu gọn (Hạng 1–4 cố định + Cuộn 5+)
                 </span>
                 <input
                   type="checkbox"
@@ -1806,7 +2328,7 @@ export function AdminDashboard({
 
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="text-[#e6d5b8]">
-                  Hiển thị khung Hoa Sen Avatar khi Phật tử hành lễ
+                  Hiển thị huy hiệu Hoa Sen khi Phật tử hành lễ (Không ảnh đại diện)
                 </span>
                 <input
                   type="checkbox"
@@ -1823,7 +2345,7 @@ export function AdminDashboard({
 
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="text-[#e6d5b8]">
-                  Hiển thị Thanh Hướng Dẫn &ldquo;❤️ LIKE: GÕ MÕ&rdquo; &amp; Bộ Đếm
+                  Hiển thị dòng hướng dẫn thu gọn &ldquo;❤️ Like: Gõ mõ&rdquo; &amp; Bộ Đếm
                 </span>
                 <input
                   type="checkbox"
@@ -1839,22 +2361,9 @@ export function AdminDashboard({
               </label>
 
               <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-[#e6d5b8]">Hiển thị bong bóng bình luận 5 giây</span>
-                <input
-                  type="checkbox"
-                  checked={overlaySettings.showCommentBubbles}
-                  onChange={(e) =>
-                    onUpdateOverlaySettings({
-                      ...overlaySettings,
-                      showCommentBubbles: e.target.checked,
-                    })
-                  }
-                  className="accent-[#d4af37]"
-                />
-              </label>
-
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-[#e6d5b8]">Hiển thị luồng thông báo góc dưới trái</span>
+                <span className="text-[#e6d5b8]">
+                  Hiển thị thông báo sự kiện nhỏ sát mép dưới trái
+                </span>
                 <input
                   type="checkbox"
                   checked={overlaySettings.showNotifications}
@@ -1869,7 +2378,26 @@ export function AdminDashboard({
               </label>
 
               <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-[#e6d5b8]">Hiển thị tên tài khoản trên đầu nhân vật</span>
+                <span className="text-[#ffe082] font-medium">
+                  Hiển thị bong bóng bình luận 5s trên đầu nhân vật (Chỉ nội dung bình luận)
+                </span>
+                <input
+                  type="checkbox"
+                  checked={overlaySettings.showCommentBubbles}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      showCommentBubbles: e.target.checked,
+                    })
+                  }
+                  className="accent-[#d4af37]"
+                />
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-[#e6d5b8]">
+                  Hiển thị nhãn tên nhỏ chống đè nhau trên đầu nhân vật
+                </span>
                 <input
                   type="checkbox"
                   checked={overlaySettings.showUsernames}

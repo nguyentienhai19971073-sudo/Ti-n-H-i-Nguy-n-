@@ -1,6 +1,9 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { BuddhaModelLoadStatus } from '../../types/temple';
 import { ALTAR_CENTER_Z } from '../../systems/SeatManager';
 import { createBannerTexture, createRadialGlowTexture } from './templeResources';
 
@@ -12,6 +15,37 @@ interface BuddhaAltarProps {
   lotusGlowUntil: number;
   pagodaGlowUntil: number;
   floatingLanternCount: number;
+  buddhaModelUrl?: string;
+  buddhaGoldOverride?: boolean;
+  onBuddhaModelStatus?: (status: BuddhaModelLoadStatus, detail?: string) => void;
+}
+
+// Exported Sanctuary Buddha world-space bounding constants for camera framing & UI exclusion checks
+export const BUDDHA_WORLD_BOUNDS = {
+  centerX: 0,
+  centerZ: ALTAR_CENTER_Z - 0.82, // -13.22
+  pedestalBottomY: 1.48,
+  haloTopY: 12.52,
+  halfWidthX: 3.35,
+};
+
+function disposeObject3D(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry?.dispose();
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        if (!m) continue;
+        for (const val of Object.values(m)) {
+          if (val && typeof val === 'object' && 'isTexture' in val) {
+            (val as THREE.Texture).dispose();
+          }
+        }
+        m.dispose();
+      }
+    }
+  });
 }
 
 export function BuddhaAltar({
@@ -22,11 +56,16 @@ export function BuddhaAltar({
   lotusGlowUntil,
   pagodaGlowUntil,
   floatingLanternCount,
+  buddhaModelUrl = '',
+  buddhaGoldOverride = true,
+  onBuddhaModelStatus,
 }: BuddhaAltarProps) {
   const haloRef = useRef<THREE.Group>(null);
   const haloInnerRef = useRef<THREE.Group>(null);
   const auraLightRef = useRef<THREE.PointLight>(null);
+  const rimLightRef = useRef<THREE.PointLight>(null);
   const auraDiscRef = useRef<THREE.Mesh>(null);
+  const crownGlowRef = useRef<THREE.Mesh>(null);
   const smokeRefs = useRef<(THREE.Mesh | null)[]>([]);
   const candleLeftRef = useRef<THREE.PointLight>(null);
   const candleRightRef = useRef<THREE.PointLight>(null);
@@ -39,26 +78,65 @@ export function BuddhaAltar({
   const lotusStandRightRef = useRef<THREE.Group>(null);
   const ceremonySpotLightRef = useRef<THREE.PointLight>(null);
 
+  const [externalBuddhaScene, setExternalBuddhaScene] = useState<THREE.Group | null>(null);
+
+  // ============================================================================
+  // REALISTIC 24K GILDED GOLD PBR MATERIALS (MeshPhysicalMaterial + Clearcoat)
+  // ============================================================================
   const goldStatueMat = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({
-        color: '#fce068',
-        metalness: 0.9,
-        roughness: 0.17,
-        emissive: '#875408',
-        emissiveIntensity: 0.44,
+      new THREE.MeshPhysicalMaterial({
+        color: '#ffdf6b',
+        metalness: 0.92,
+        roughness: 0.16,
+        clearcoat: 0.56,
+        clearcoatRoughness: 0.15,
+        reflectivity: 1.0,
+        envMapIntensity: 1.48,
+        emissive: '#784805',
+        emissiveIntensity: 0.34,
+      }),
+    [],
+  );
+
+  const goldRobeMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#f5c748',
+        metalness: 0.88,
+        roughness: 0.27,
+        clearcoat: 0.38,
+        clearcoatRoughness: 0.26,
+        envMapIntensity: 1.28,
+        emissive: '#663a04',
+        emissiveIntensity: 0.27,
       }),
     [],
   );
 
   const goldTrimMat = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({
-        color: '#e8b93c',
-        metalness: 0.85,
-        roughness: 0.25,
-        emissive: '#543205',
-        emissiveIntensity: 0.25,
+      new THREE.MeshPhysicalMaterial({
+        color: '#e6b238',
+        metalness: 0.87,
+        roughness: 0.24,
+        clearcoat: 0.32,
+        clearcoatRoughness: 0.24,
+        emissive: '#523004',
+        emissiveIntensity: 0.22,
+      }),
+    [],
+  );
+
+  const buddhaHairMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#d49a24',
+        metalness: 0.84,
+        roughness: 0.34,
+        clearcoat: 0.22,
+        emissive: '#472803',
+        emissiveIntensity: 0.2,
       }),
     [],
   );
@@ -66,21 +144,23 @@ export function BuddhaAltar({
   const buddhaFeatureMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
-        color: '#8f590a',
-        metalness: 0.65,
-        roughness: 0.35,
+        color: '#734406',
+        metalness: 0.62,
+        roughness: 0.36,
       }),
     [],
   );
 
   const lotusPetalMat = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({
-        color: '#f294b0',
-        metalness: 0.3,
-        roughness: 0.36,
-        emissive: '#751f39',
-        emissiveIntensity: 0.32,
+      new THREE.MeshPhysicalMaterial({
+        color: '#f59ab7',
+        metalness: 0.26,
+        roughness: 0.26,
+        clearcoat: 0.62,
+        clearcoatRoughness: 0.18,
+        emissive: '#731e39',
+        emissiveIntensity: 0.28,
       }),
     [],
   );
@@ -90,7 +170,7 @@ export function BuddhaAltar({
       new THREE.MeshStandardMaterial({
         color: '#291309',
         metalness: 0.12,
-        roughness: 0.54,
+        roughness: 0.52,
       }),
     [],
   );
@@ -99,8 +179,8 @@ export function BuddhaAltar({
     () =>
       new THREE.MeshStandardMaterial({
         color: '#6b0f14',
-        metalness: 0.22,
-        roughness: 0.36,
+        metalness: 0.24,
+        roughness: 0.34,
       }),
     [],
   );
@@ -108,9 +188,9 @@ export function BuddhaAltar({
   const bronzeMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
-        color: '#c6953f',
-        metalness: 0.86,
-        roughness: 0.27,
+        color: '#c8963e',
+        metalness: 0.87,
+        roughness: 0.26,
       }),
     [],
   );
@@ -127,6 +207,280 @@ export function BuddhaAltar({
     [],
   );
 
+  // ============================================================================
+  // SCULPTED 3D PROCEDURAL GEOMETRIES (Lathe + Extrude + Tube Robe Drapery)
+  // ============================================================================
+  const sculptedGeos = useMemo(() => {
+    // 1. Turned Waisted Sumeru Pedestal (Bệ Tu Di Tam Cấp)
+    const pedestalPts = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(2.48, 0.0),
+      new THREE.Vector2(2.52, 0.14),
+      new THREE.Vector2(2.26, 0.24),
+      new THREE.Vector2(2.14, 0.38),
+      new THREE.Vector2(1.62, 0.56), // Waisted Sumeru drum
+      new THREE.Vector2(1.56, 0.72),
+      new THREE.Vector2(1.88, 0.92), // Lotus receptacle rim
+      new THREE.Vector2(1.98, 1.12),
+      new THREE.Vector2(1.76, 1.18), // Flat lotus seed pod (Gương Sen)
+      new THREE.Vector2(0.0, 1.18),
+    ];
+    const sumeruPedestal = new THREE.LatheGeometry(pedestalPts, 40);
+
+    // 2. Genuine Curved 3D Sculpted Lotus Petal (ExtrudeGeometry with smooth bevel)
+    const petalShape = new THREE.Shape();
+    petalShape.moveTo(0, 0);
+    petalShape.bezierCurveTo(0.28, 0.08, 0.39, 0.42, 0.24, 0.76);
+    petalShape.quadraticCurveTo(0.08, 0.96, 0, 1.06);
+    petalShape.quadraticCurveTo(-0.08, 0.96, -0.24, 0.76);
+    petalShape.bezierCurveTo(-0.39, 0.42, -0.28, 0.08, 0, 0);
+
+    const lotusPetal = new THREE.ExtrudeGeometry(petalShape, {
+      depth: 0.075,
+      bevelEnabled: true,
+      bevelSegments: 4,
+      steps: 1,
+      bevelSize: 0.042,
+      bevelThickness: 0.045,
+      curveSegments: 16,
+    });
+    lotusPetal.center();
+
+    // 3. Natural Sculpted Contoured Buddha Torso (LatheGeometry from waist to calm broad shoulders)
+    const torsoPts = [
+      new THREE.Vector2(0.0, 0.36),
+      new THREE.Vector2(1.16, 0.38), // Draped lower robe hem
+      new THREE.Vector2(1.02, 0.72),
+      new THREE.Vector2(0.84, 1.08), // Graceful meditative waist
+      new THREE.Vector2(0.92, 1.48), // Serene open chest
+      new THREE.Vector2(1.06, 1.92), // Broad compassionate shoulders
+      new THREE.Vector2(0.92, 2.22),
+      new THREE.Vector2(0.46, 2.42), // Collar & neck base
+      new THREE.Vector2(0.0, 2.44),
+    ];
+    const sculptedTorso = new THREE.LatheGeometry(torsoPts, 36);
+    sculptedTorso.scale(1.08, 1.0, 0.76);
+
+    // 4. Turned Sacred Alms Bowl / Lotus Reliquary (Bát Bửu Thiền Định)
+    const bowlPts = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.18, 0.0),
+      new THREE.Vector2(0.32, 0.09),
+      new THREE.Vector2(0.36, 0.21),
+      new THREE.Vector2(0.31, 0.31),
+      new THREE.Vector2(0.26, 0.31),
+      new THREE.Vector2(0.24, 0.16),
+      new THREE.Vector2(0.0, 0.14),
+    ];
+    const almsBowl = new THREE.LatheGeometry(bowlPts, 28);
+
+    // 5. Flowing 3D Monastic Robe Folds (Áo Cà Sa TubeGeometries)
+    const leftSashCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.78, 2.22, 0.36),
+      new THREE.Vector3(-0.56, 1.82, 0.64),
+      new THREE.Vector3(-0.18, 1.35, 0.68),
+      new THREE.Vector3(0.28, 0.94, 0.62),
+      new THREE.Vector3(0.56, 0.62, 0.56),
+    ]);
+    const robeFoldPrimary = new THREE.TubeGeometry(leftSashCurve, 28, 0.068, 12, false);
+
+    const innerFoldCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.62, 2.26, 0.42),
+      new THREE.Vector3(-0.34, 1.76, 0.69),
+      new THREE.Vector3(0.04, 1.32, 0.7),
+      new THREE.Vector3(0.38, 0.98, 0.64),
+    ]);
+    const robeFoldSecondary = new THREE.TubeGeometry(innerFoldCurve, 24, 0.052, 10, false);
+
+    const rightCollarCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.76, 2.2, 0.36),
+      new THREE.Vector3(0.54, 1.78, 0.64),
+      new THREE.Vector3(0.18, 1.38, 0.69),
+      new THREE.Vector3(-0.14, 1.04, 0.66),
+    ]);
+    const robeFoldRight = new THREE.TubeGeometry(rightCollarCurve, 24, 0.058, 10, false);
+
+    const lapApronCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.56, 0.42, 0.88),
+      new THREE.Vector3(-0.28, 0.18, 1.06),
+      new THREE.Vector3(0.0, 0.08, 1.12),
+      new THREE.Vector3(0.28, 0.18, 1.06),
+      new THREE.Vector3(0.56, 0.42, 0.88),
+    ]);
+    const lapDraperyFold = new THREE.TubeGeometry(lapApronCurve, 24, 0.062, 10, false);
+
+    // 6. Ornate Pointed Bodhi-Leaf Mandorla Frame (Thân Quang Lá Bồ Đề)
+    const bodhiOuter = new THREE.Shape();
+    bodhiOuter.moveTo(0, -1.75);
+    bodhiOuter.bezierCurveTo(1.75, -1.65, 2.32, -0.35, 1.96, 0.92);
+    bodhiOuter.bezierCurveTo(1.62, 1.72, 0.62, 2.15, 0, 2.42);
+    bodhiOuter.bezierCurveTo(-0.62, 2.15, -1.62, 1.72, -1.96, 0.92);
+    bodhiOuter.bezierCurveTo(-2.32, -0.35, -1.75, -1.65, 0, -1.75);
+
+    const bodhiHole = new THREE.Path();
+    bodhiHole.moveTo(0, -1.52);
+    bodhiHole.bezierCurveTo(1.48, -1.42, 1.98, -0.28, 1.68, 0.82);
+    bodhiHole.bezierCurveTo(1.38, 1.48, 0.52, 1.86, 0, 2.1);
+    bodhiHole.bezierCurveTo(-0.52, 1.86, -1.38, 1.48, -1.68, 0.82);
+    bodhiHole.bezierCurveTo(-1.98, -0.28, -1.48, -1.42, 0, -1.52);
+    bodhiOuter.holes.push(bodhiHole);
+
+    const bodhiMandorlaRim = new THREE.ExtrudeGeometry(bodhiOuter, {
+      depth: 0.06,
+      bevelEnabled: true,
+      bevelSegments: 3,
+      steps: 1,
+      bevelSize: 0.03,
+      bevelThickness: 0.03,
+      curveSegments: 28,
+    });
+
+    return {
+      sumeruPedestal,
+      lotusPetal,
+      sculptedTorso,
+      almsBowl,
+      robeFoldPrimary,
+      robeFoldSecondary,
+      robeFoldRight,
+      lapDraperyFold,
+      bodhiMandorlaRim,
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      Object.values(sculptedGeos).forEach((g) => g.dispose());
+    };
+  }, [sculptedGeos]);
+
+  // 3D Spiral Hair Curls (Tóc Bụt Xoắn Ốc) covering cranial dome & Ushnisha
+  const hairCurlPositions = useMemo(() => {
+    const curls: [number, number, number][] = [];
+    const domeRings = [
+      { y: 0.24, r: 0.65, count: 18, zMin: -0.68, zMax: 0.34 },
+      { y: 0.4, r: 0.58, count: 16, zMin: -0.6, zMax: 0.44 },
+      { y: 0.55, r: 0.46, count: 14, zMin: -0.48, zMax: 0.48 },
+      { y: 0.67, r: 0.31, count: 10, zMin: -0.34, zMax: 0.34 },
+      // Ushnisha (Nhục Kế) crown curls
+      { y: 0.82, r: 0.27, count: 10, zMin: -0.3, zMax: 0.3 },
+      { y: 0.96, r: 0.19, count: 8, zMin: -0.22, zMax: 0.22 },
+    ];
+    for (const ring of domeRings) {
+      for (let i = 0; i < ring.count; i++) {
+        const a = (i / ring.count) * Math.PI * 2;
+        const cx = Math.sin(a) * ring.r * 0.94;
+        const cz = Math.cos(a) * ring.r * 0.96 - 0.02;
+        if (cz <= ring.zMax && cz >= ring.zMin) {
+          curls.push([cx, ring.y, cz]);
+        }
+      }
+    }
+    return curls;
+  }, []);
+
+  // ============================================================================
+  // CONFIGURABLE EXTERNAL / LOCAL GLB OR GLTF BUDDHA MODEL LOADER
+  // Automatically normalizes scale onto the Lotus Pedestal & falls back safely
+  // ============================================================================
+  useEffect(() => {
+    const cleanUrl = buddhaModelUrl.trim();
+    if (!cleanUrl) {
+      setExternalBuddhaScene((prev) => {
+        if (prev) disposeObject3D(prev);
+        return null;
+      });
+      onBuddhaModelStatus?.('builtin', 'Đang sử dụng tôn tượng Đức Phật Vàng điêu khắc 3D tích hợp');
+      return;
+    }
+
+    let cancelled = false;
+    onBuddhaModelStatus?.('loading', `Đang tải mô hình GLB/GLTF: ${cleanUrl}`);
+
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+
+    gltfLoader.load(
+      cleanUrl,
+      (gltf) => {
+        if (cancelled) {
+          disposeObject3D(gltf.scene);
+          dracoLoader.dispose();
+          return;
+        }
+
+        const wrapper = new THREE.Group();
+        const modelRoot = gltf.scene;
+
+        // Compute bounding box & normalize to fit cleanly atop the Lotus Pedestal (target local height = 3.12)
+        const box = new THREE.Box3().setFromObject(modelRoot);
+        const size = new THREE.Vector3();
+        const center = new THREE.Vector3();
+        box.getSize(size);
+        box.getCenter(center);
+
+        const maxDim = Math.max(size.y, size.x, size.z, 0.001);
+        const normScale = 3.12 / maxDim;
+        modelRoot.scale.setScalar(normScale);
+
+        const scaledBox = new THREE.Box3().setFromObject(modelRoot);
+        const scaledCenter = new THREE.Vector3();
+        scaledBox.getCenter(scaledCenter);
+
+        modelRoot.position.set(
+          -scaledCenter.x,
+          -scaledBox.min.y,
+          -scaledCenter.z,
+        );
+
+        modelRoot.traverse((obj) => {
+          if ((obj as THREE.Mesh).isMesh) {
+            const mesh = obj as THREE.Mesh;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            if (buddhaGoldOverride) {
+              mesh.material = goldStatueMat.clone();
+            }
+          }
+        });
+
+        wrapper.add(modelRoot);
+
+        setExternalBuddhaScene((prev) => {
+          if (prev) disposeObject3D(prev);
+          return wrapper;
+        });
+        onBuddhaModelStatus?.('loaded', `Đã tải mô hình 3D tùy chỉnh: ${cleanUrl}`);
+        dracoLoader.dispose();
+      },
+      undefined,
+      (err) => {
+        if (cancelled) {
+          dracoLoader.dispose();
+          return;
+        }
+        console.warn('[BuddhaAltar] Không tải được GLB/GLTF, tự động dùng tôn tượng tích hợp:', err);
+        setExternalBuddhaScene((prev) => {
+          if (prev) disposeObject3D(prev);
+          return null;
+        });
+        onBuddhaModelStatus?.(
+          'fallback_error',
+          'Không tải được tệp GLB/GLTF — đã tự động chuyển về tôn tượng vàng tích hợp.',
+        );
+        dracoLoader.dispose();
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      dracoLoader.dispose();
+    };
+  }, [buddhaModelUrl, buddhaGoldOverride, goldStatueMat, onBuddhaModelStatus]);
+
   const leftCoupletTex = useMemo(
     () => createBannerTexture(['NAM', 'MÔ', 'A', 'DI', 'ĐÀ', 'PHẬT']),
     [],
@@ -136,16 +490,24 @@ export function BuddhaAltar({
     [],
   );
   const haloGlowTex = useMemo(
-    () => createRadialGlowTexture('rgba(255, 240, 168, 0.98)', 'rgba(235, 168, 38, 0.38)'),
+    () => createRadialGlowTexture('rgba(255, 244, 184, 0.96)', 'rgba(238, 174, 42, 0.36)'),
     [],
   );
 
+  const lotusAnglesLower = useMemo(
+    () => Array.from({ length: 18 }, (_, i) => ((i + 0.5) / 18) * Math.PI * 2),
+    [],
+  );
   const lotusAnglesOuter = useMemo(
     () => Array.from({ length: 20 }, (_, i) => (i / 20) * Math.PI * 2),
     [],
   );
   const lotusAnglesInner = useMemo(
-    () => Array.from({ length: 16 }, (_, i) => ((i + 0.5) / 16) * Math.PI * 2),
+    () => Array.from({ length: 18 }, (_, i) => ((i + 0.5) / 18) * Math.PI * 2),
+    [],
+  );
+  const lotusStamenAngles = useMemo(
+    () => Array.from({ length: 24 }, (_, i) => (i / 24) * Math.PI * 2),
     [],
   );
 
@@ -157,7 +519,7 @@ export function BuddhaAltar({
         const angle = ringIdx * 2.39996;
         const r = ringIdx === 0 ? 0.08 : Math.min(0.62, 0.18 + (ringIdx % 5) * 0.1);
         return {
-          basinX: basinSide * 2.62,
+          basinX: basinSide * 2.52,
           localX: Math.cos(angle) * r,
           localZ: Math.sin(angle) * r,
           phase: idx * 0.85,
@@ -177,18 +539,18 @@ export function BuddhaAltar({
     const isPagodaActive = now < pagodaGlowUntil;
 
     if (haloRef.current) {
-      haloRef.current.rotation.z += delta * (isBlessed ? 0.45 : 0.11);
+      haloRef.current.rotation.z += delta * (isBlessed ? 0.42 : 0.09);
     }
     if (haloInnerRef.current) {
-      haloInnerRef.current.rotation.z -= delta * (isBlessed ? 0.34 : 0.08);
+      haloInnerRef.current.rotation.z -= delta * (isBlessed ? 0.32 : 0.07);
     }
 
     if (auraLightRef.current) {
       const targetIntensity = isPagodaActive
-        ? 32
+        ? 30
         : isBlessed
-          ? 26
-          : 15.5 + Math.sin(t * 1.5) * 0.9;
+          ? 24
+          : 15.8 + Math.sin(t * 1.4) * 0.85;
       auraLightRef.current.intensity = THREE.MathUtils.damp(
         auraLightRef.current.intensity,
         targetIntensity,
@@ -197,9 +559,19 @@ export function BuddhaAltar({
       );
     }
 
+    if (rimLightRef.current) {
+      const targetRim = isPagodaActive || isBlessed ? 14.5 : 8.8 + Math.cos(t * 1.2) * 0.5;
+      rimLightRef.current.intensity = THREE.MathUtils.damp(
+        rimLightRef.current.intensity,
+        targetRim,
+        4,
+        delta,
+      );
+    }
+
     if (ceremonySpotLightRef.current) {
       const targetCeremonyGlow =
-        isPagodaActive || isLotusActive || isFruitActive ? 8.5 : 2.2;
+        isPagodaActive || isLotusActive || isFruitActive ? 8.5 : 2.4;
       ceremonySpotLightRef.current.intensity = THREE.MathUtils.damp(
         ceremonySpotLightRef.current.intensity,
         targetCeremonyGlow,
@@ -210,10 +582,15 @@ export function BuddhaAltar({
 
     if (auraDiscRef.current) {
       const targetScale = isBlessed
-        ? 1.32 + Math.sin(t * 4.2) * 0.05
-        : 1.04 + Math.sin(t * 1.3) * 0.03;
+        ? 1.26 + Math.sin(t * 4.0) * 0.04
+        : 1.02 + Math.sin(t * 1.3) * 0.025;
       const s = THREE.MathUtils.damp(auraDiscRef.current.scale.x, targetScale, 4, delta);
       auraDiscRef.current.scale.set(s, s, 1);
+    }
+
+    if (crownGlowRef.current) {
+      const cs = 1.0 + Math.sin(t * 2.2) * 0.06;
+      crownGlowRef.current.scale.set(cs, cs, 1);
     }
 
     if (pagodaAltarGroupRef.current) {
@@ -242,14 +619,14 @@ export function BuddhaAltar({
 
     smokeRefs.current.forEach((mesh, idx) => {
       if (!mesh) return;
-      const speed = isIncenseGlowing ? 0.55 : 0.34;
+      const speed = isIncenseGlowing ? 0.52 : 0.32;
       const cycle = (t * speed + idx * 0.2) % 1;
-      mesh.position.y = 1.82 + cycle * (isIncenseGlowing ? 3.1 : 2.2);
-      mesh.position.x = Math.sin(t * 1.6 + idx * 1.7) * 0.18 * cycle;
-      const scale = (isIncenseGlowing ? 0.32 : 0.22) + cycle * 0.88;
+      mesh.position.y = 1.72 + cycle * (isIncenseGlowing ? 2.6 : 1.85);
+      mesh.position.x = Math.sin(t * 1.6 + idx * 1.7) * 0.16 * cycle;
+      const scale = (isIncenseGlowing ? 0.28 : 0.2) + cycle * 0.75;
       mesh.scale.setScalar(scale);
       const mat = mesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = Math.sin(cycle * Math.PI) * (isIncenseGlowing ? 0.34 : 0.18);
+      mat.opacity = Math.sin(cycle * Math.PI) * (isIncenseGlowing ? 0.3 : 0.15);
     });
 
     if (bellSwingGroupRef.current && bellStrikerRef.current && bellWaveRingRef.current) {
@@ -257,11 +634,11 @@ export function BuddhaAltar({
         const remain = (bellRingUntil - now) / 5600;
         const swingAmp = Math.sin(t * 7.5) * 0.15 * Math.max(0.15, remain);
         bellSwingGroupRef.current.rotation.z = swingAmp;
-        bellStrikerRef.current.position.x = -0.68 + Math.max(0, Math.sin(t * 7.5)) * 0.24 * remain;
+        bellStrikerRef.current.position.x = -0.64 + Math.max(0, Math.sin(t * 7.5)) * 0.22 * remain;
 
         bellWaveRingRef.current.visible = true;
         const waveCycle = (t * 1.35) % 1;
-        const ringScale = 0.7 + waveCycle * 2.9;
+        const ringScale = 0.7 + waveCycle * 2.8;
         bellWaveRingRef.current.scale.set(ringScale, ringScale, 1);
         (bellWaveRingRef.current.material as THREE.MeshBasicMaterial).opacity =
           (1 - waveCycle) * 0.68;
@@ -274,7 +651,7 @@ export function BuddhaAltar({
         );
         bellStrikerRef.current.position.x = THREE.MathUtils.damp(
           bellStrikerRef.current.position.x,
-          -0.68,
+          -0.64,
           6,
           delta,
         );
@@ -298,252 +675,401 @@ export function BuddhaAltar({
   return (
     <group position={[0, 0, ALTAR_CENTER_Z]}>
       {/* Grand Sanctuary Carved Rosewood & Crimson Lacquer Backdrop */}
-      <group position={[0, 0, -3.1]}>
+      <group position={[0, 0, -3.2]}>
         <mesh position={[0, 7.2, 0]} material={darkWoodMat}>
-          <boxGeometry args={[18.4, 14.4, 0.58]} />
+          <boxGeometry args={[16.8, 14.4, 0.58]} />
         </mesh>
         <mesh position={[0, 7.0, 0.31]} material={crimsonLacquerMat}>
-          <boxGeometry args={[12.8, 13.0, 0.14]} />
+          <boxGeometry args={[11.6, 13.0, 0.14]} />
         </mesh>
-        {/* High Gilded Horizontal Sanctuary Plaque (Hoành Phi Đại Hùng Bảo Điện — above halo!) */}
-        <mesh position={[0, 13.15, 0.48]} material={goldTrimMat}>
-          <boxGeometry args={[9.2, 1.12, 0.22]} />
+        {/* High Gilded Horizontal Sanctuary Plaque (Hoành Phi Đại Hùng Bảo Điện — raised cleanly above halo!) */}
+        <mesh position={[0, 13.65, 0.48]} material={goldTrimMat}>
+          <boxGeometry args={[8.4, 0.96, 0.22]} />
         </mesh>
-        <mesh position={[0, 13.15, 0.61]} material={crimsonLacquerMat}>
-          <boxGeometry args={[8.6, 0.78, 0.06]} />
+        <mesh position={[0, 13.65, 0.61]} material={crimsonLacquerMat}>
+          <boxGeometry args={[7.8, 0.66, 0.06]} />
         </mesh>
 
         {/* Left & Right Tall Gilded Calligraphy Couplets (Câu Đối) flanking the Buddha */}
-        <mesh position={[-7.35, 6.8, 0.4]}>
-          <planeGeometry args={[1.32, 8.8]} />
+        <mesh position={[-5.95, 6.8, 0.4]}>
+          <planeGeometry args={[1.18, 8.6]} />
           <meshStandardMaterial map={leftCoupletTex} roughness={0.36} metalness={0.28} />
         </mesh>
-        <mesh position={[7.35, 6.8, 0.4]}>
-          <planeGeometry args={[1.32, 8.8]} />
+        <mesh position={[5.95, 6.8, 0.4]}>
+          <planeGeometry args={[1.18, 8.6]} />
           <meshStandardMaterial map={rightCoupletTex} roughness={0.36} metalness={0.28} />
         </mesh>
       </group>
 
-      {/* Stepped Sanctuary Dais Platform (Bệ Thờ Tam Cấp Trang Nghiêm) */}
-      <mesh position={[0, 0.28, 0.1]} material={darkWoodMat} receiveShadow>
-        <boxGeometry args={[14.2, 0.56, 5.6]} />
+      {/* Stepped Sanctuary Dais Platform (Bệ Thờ Tam Cấp Trang Nghiêm — y = 0..1.48) */}
+      <mesh position={[0, 0.22, 0.1]} material={darkWoodMat} receiveShadow>
+        <boxGeometry args={[12.4, 0.44, 5.4]} />
       </mesh>
-      <mesh position={[0, 0.58, 0.1]} material={goldTrimMat}>
-        <boxGeometry args={[14.32, 0.08, 5.7]} />
+      <mesh position={[0, 0.46, 0.1]} material={goldTrimMat}>
+        <boxGeometry args={[12.52, 0.07, 5.5]} />
       </mesh>
-      <mesh position={[0, 1.18, -0.65]} material={crimsonLacquerMat} receiveShadow>
-        <boxGeometry args={[9.8, 1.18, 4.3]} />
+      <mesh position={[0, 0.95, -0.7]} material={crimsonLacquerMat} receiveShadow>
+        <boxGeometry args={[8.8, 0.92, 4.1]} />
       </mesh>
-      <mesh position={[0, 1.8, -0.65]} material={goldTrimMat}>
-        <boxGeometry args={[9.96, 0.12, 4.44]} />
+      <mesh position={[0, 1.44, -0.7]} material={goldTrimMat}>
+        <boxGeometry args={[8.96, 0.09, 4.24]} />
       </mesh>
 
       {/* ====================================================================
-          MAGNIFICENT MONUMENTAL GOLDEN BUDDHA STATUE & LOTUS THRONE (1.98x Scale!)
-          Significantly larger, radiant 24K gold & completely unobstructed centerpiece
+          SACRED 24K GOLDEN BUDDHA STATUE & SCULPTED THREE-TIER LOTUS THRONE
+          100% Unobstructed Head-to-Pedestal Framing Inside 9:16 Portrait View
          ==================================================================== */}
-      <group position={[0, 1.84, -0.78]} scale={[1.98, 1.98, 1.98]}>
-        {/* Pedestal Octagonal Gilded Base */}
-        <mesh position={[0, 0.34, 0]} material={goldTrimMat}>
-          <cylinderGeometry args={[2.28, 2.62, 0.68, 16]} />
-        </mesh>
-        <mesh position={[0, 0.84, 0]} material={goldStatueMat}>
-          <cylinderGeometry args={[1.88, 1.54, 0.46, 24]} />
-        </mesh>
+      <group position={[0, 1.48, -0.82]} scale={[1.82, 1.82, 1.82]}>
+        {/* 1. Turned Sumeru Throne & Flat Golden Lotus Seed Pod (Bệ Tu Di & Gương Sen) */}
+        <mesh geometry={sculptedGeos.sumeruPedestal} material={goldTrimMat} castShadow receiveShadow />
 
-        {/* Outer Ring of Sculpted Rose-Gold & 24K Gold Lotus Petals */}
+        {/* Lower Tier: 18 Downward-Sweeping Sculpted 3D Lotus Skirt Petals */}
+        {lotusAnglesLower.map((angle, i) => (
+          <group key={`lower-petal-${i}`} rotation={[0, angle, 0]}>
+            <mesh
+              position={[0, 0.34, 2.08]}
+              rotation={[2.38, 0, 0]}
+              scale={[0.88, 0.62, 0.9]}
+              geometry={sculptedGeos.lotusPetal}
+              material={goldTrimMat}
+            />
+          </group>
+        ))}
+
+        {/* Middle Outer Tier: 20 Blooming Rose-Enamel & 24K Gold Sculpted Petals */}
         {lotusAnglesOuter.map((angle, i) => (
           <group key={`outer-petal-${i}`} rotation={[0, angle, 0]}>
             <mesh
-              position={[0, 0.78, 2.04]}
-              rotation={[0.48, 0, 0]}
+              position={[0, 0.72, 1.98]}
+              rotation={[-0.52, 0, 0]}
+              scale={[1.05, 0.88, 1.0]}
+              geometry={sculptedGeos.lotusPetal}
               material={i % 2 === 0 ? goldStatueMat : lotusPetalMat}
-            >
-              <coneGeometry args={[0.44, 1.0, 5]} />
-            </mesh>
+              castShadow
+            />
           </group>
         ))}
 
-        {/* Inner Ring of Radiant Golden Lotus Petals */}
+        {/* Upper Inner Tier: 18 Cupping 24K Polished Gold Lotus Petals */}
         {lotusAnglesInner.map((angle, i) => (
           <group key={`inner-petal-${i}`} rotation={[0, angle, 0]}>
-            <mesh position={[0, 1.04, 1.74]} rotation={[0.26, 0, 0]} material={goldStatueMat}>
-              <coneGeometry args={[0.39, 0.9, 5]} />
-            </mesh>
+            <mesh
+              position={[0, 0.92, 1.76]}
+              rotation={[-0.28, 0, 0]}
+              scale={[0.96, 0.84, 0.95]}
+              geometry={sculptedGeos.lotusPetal}
+              material={goldStatueMat}
+              castShadow
+            />
           </group>
         ))}
 
-        {/* SCULPTED SEATED GOLDEN BUDDHA */}
-        <group position={[0, 1.16, 0]}>
-          {/* 1. Crossed Lotus-Posture Legs */}
+        {/* Golden Lotus Stamen Beads (Nhụy Sen Vàng) encircling the seed pod rim */}
+        {lotusStamenAngles.map((angle, i) => (
           <mesh
-            position={[0, 0.34, 0.16]}
-            scale={[1.58, 0.54, 1.15]}
-            material={goldStatueMat}
-            castShadow
-          >
-            <sphereGeometry args={[1.06, 28, 20]} />
-          </mesh>
-          <mesh
-            position={[-0.98, 0.28, 0.36]}
-            rotation={[0, 0, -0.24]}
-            scale={[0.88, 0.44, 0.76]}
+            key={`stamen-${i}`}
+            position={[Math.sin(angle) * 1.66, 1.2, Math.cos(angle) * 1.66]}
             material={goldStatueMat}
           >
-            <sphereGeometry args={[0.8, 20, 16]} />
+            <sphereGeometry args={[0.068, 10, 10]} />
           </mesh>
-          <mesh
-            position={[0.98, 0.28, 0.36]}
-            rotation={[0, 0, 0.24]}
-            scale={[0.88, 0.44, 0.76]}
-            material={goldStatueMat}
-          >
-            <sphereGeometry args={[0.8, 20, 16]} />
-          </mesh>
+        ))}
 
-          {/* 2. Majestic Torso & Draped Monastic Robes (Áo Cà Sa) */}
-          <mesh position={[0, 1.4, 0]} material={goldStatueMat} castShadow>
-            <cylinderGeometry args={[0.85, 1.12, 1.92, 28]} />
-          </mesh>
-          <mesh
-            position={[0, 2.12, 0.04]}
-            scale={[1.44, 0.78, 0.9]}
-            material={goldStatueMat}
-            castShadow
-          >
-            <sphereGeometry args={[0.88, 26, 20]} />
-          </mesh>
-          <mesh
-            position={[-0.12, 1.6, 0.44]}
-            rotation={[0.15, 0.1, -0.58]}
-            scale={[0.36, 1.18, 0.46]}
-            material={goldTrimMat}
-          >
-            <torusGeometry args={[0.84, 0.14, 12, 28]} />
-          </mesh>
+        {/* 2. GOLDEN BUDDHA BODY (External GLB/GLTF if loaded, else High-Detail Sculpted Statue) */}
+        <group position={[0, 1.18, 0]}>
+          {externalBuddhaScene ? (
+            <primitive object={externalBuddhaScene} />
+          ) : (
+            <group>
+              {/* A. Full-Lotus Seated Posture (Kiết Già / Padmasana) & Draped Robe Hem */}
+              <mesh
+                position={[0, 0.28, 0.14]}
+                scale={[1.64, 0.46, 1.16]}
+                material={goldRobeMat}
+                castShadow
+              >
+                <sphereGeometry args={[1.04, 32, 24]} />
+              </mesh>
+              {/* Left & Right Sculpted Knees & Thighs */}
+              <mesh
+                position={[-0.96, 0.25, 0.34]}
+                rotation={[0.08, 0.18, -0.2]}
+                scale={[0.94, 0.42, 0.78]}
+                material={goldRobeMat}
+                castShadow
+              >
+                <sphereGeometry args={[0.82, 24, 18]} />
+              </mesh>
+              <mesh
+                position={[0.96, 0.25, 0.34]}
+                rotation={[0.08, -0.18, 0.2]}
+                scale={[0.94, 0.42, 0.78]}
+                material={goldRobeMat}
+                castShadow
+              >
+                <sphereGeometry args={[0.82, 24, 18]} />
+              </mesh>
+              {/* Crossed Ankles & Upturned Peaceful Soles */}
+              <mesh
+                position={[-0.32, 0.46, 0.68]}
+                rotation={[0.18, 0.35, 0.24]}
+                scale={[0.42, 0.18, 0.26]}
+                material={goldStatueMat}
+              >
+                <sphereGeometry args={[0.62, 16, 14]} />
+              </mesh>
+              <mesh
+                position={[0.32, 0.46, 0.68]}
+                rotation={[0.18, -0.35, -0.24]}
+                scale={[0.42, 0.18, 0.26]}
+                material={goldStatueMat}
+              >
+                <sphereGeometry args={[0.62, 16, 14]} />
+              </mesh>
+              {/* Draped Central Robe Apron cascading onto the Lotus Throne */}
+              <mesh geometry={sculptedGeos.lapDraperyFold} material={goldTrimMat} />
 
-          {/* 3. Sculpted Arms & Amitabha Dhyana Mudra holding Sacred Lotus Jewel */}
-          <mesh
-            position={[-1.06, 1.58, 0.12]}
-            rotation={[0.25, 0, 0.32]}
-            material={goldStatueMat}
-          >
-            <capsuleGeometry args={[0.27, 0.98, 8, 16]} />
-          </mesh>
-          <mesh
-            position={[1.06, 1.58, 0.12]}
-            rotation={[0.25, 0, -0.32]}
-            material={goldStatueMat}
-          >
-            <capsuleGeometry args={[0.27, 0.98, 8, 16]} />
-          </mesh>
-          <mesh
-            position={[-0.56, 0.88, 0.58]}
-            rotation={[1.25, 0.35, -0.55]}
-            material={goldStatueMat}
-          >
-            <capsuleGeometry args={[0.22, 0.78, 8, 14]} />
-          </mesh>
-          <mesh
-            position={[0.56, 0.88, 0.58]}
-            rotation={[1.25, -0.35, 0.55]}
-            material={goldStatueMat}
-          >
-            <capsuleGeometry args={[0.22, 0.78, 8, 14]} />
-          </mesh>
-          <mesh position={[0, 0.84, 0.88]} material={goldTrimMat}>
-            <cylinderGeometry args={[0.32, 0.22, 0.28, 20]} />
-          </mesh>
-          <mesh position={[0, 1.02, 0.88]}>
-            <sphereGeometry args={[0.16, 16, 16]} />
-            <meshBasicMaterial color="#fff5b8" />
-          </mesh>
+              {/* B. Sculpted Contoured Torso, Broad Shoulders & Flowing Monastic Robes (Áo Cà Sa) */}
+              <mesh geometry={sculptedGeos.sculptedTorso} material={goldRobeMat} castShadow />
+              {/* Polished Gold Inner Chest Exposure */}
+              <mesh
+                position={[0, 1.88, 0.36]}
+                scale={[0.64, 0.62, 0.44]}
+                material={goldStatueMat}
+              >
+                <sphereGeometry args={[0.76, 24, 20]} />
+              </mesh>
+              {/* Subtle Golden Lotus Dharma Medallion on Chest */}
+              <mesh position={[0, 1.84, 0.69]} rotation={[0.08, 0, Math.PI / 4]} material={goldTrimMat}>
+                <boxGeometry args={[0.15, 0.15, 0.035]} />
+              </mesh>
 
-          {/* 4. Serene Compassionate Buddha Head, Facial Features, Ears & Ushnisha */}
-          <mesh position={[0, 2.7, 0.02]} material={goldStatueMat}>
-            <cylinderGeometry args={[0.35, 0.42, 0.4, 20]} />
-          </mesh>
-          <group position={[0, 3.38, 0.06]}>
-            <mesh scale={[0.93, 1.08, 0.96]} material={goldStatueMat} castShadow>
-              <sphereGeometry args={[0.7, 32, 26]} />
-            </mesh>
-            <mesh
-              position={[-0.22, 0.1, 0.62]}
-              rotation={[0, -0.22, -0.1]}
-              material={buddhaFeatureMat}
-            >
-              <torusGeometry args={[0.12, 0.016, 8, 16, Math.PI * 0.85]} />
-            </mesh>
-            <mesh
-              position={[0.22, 0.1, 0.62]}
-              rotation={[0, 0.22, 0.1]}
-              material={buddhaFeatureMat}
-            >
-              <torusGeometry args={[0.12, 0.016, 8, 16, Math.PI * 0.85]} />
-            </mesh>
-            <mesh
-              position={[-0.22, 0.01, 0.63]}
-              rotation={[Math.PI, -0.2, 0]}
-              material={buddhaFeatureMat}
-            >
-              <torusGeometry args={[0.095, 0.014, 8, 14, Math.PI * 0.8]} />
-            </mesh>
-            <mesh
-              position={[0.22, 0.01, 0.63]}
-              rotation={[Math.PI, 0.2, 0]}
-              material={buddhaFeatureMat}
-            >
-              <torusGeometry args={[0.095, 0.014, 8, 14, Math.PI * 0.8]} />
-            </mesh>
-            <mesh position={[0, -0.06, 0.66]} rotation={[-0.18, 0, 0]} material={goldStatueMat}>
-              <coneGeometry args={[0.075, 0.24, 12]} />
-            </mesh>
-            <mesh
-              position={[0, -0.24, 0.61]}
-              rotation={[Math.PI * 0.92, 0, 0]}
-              material={buddhaFeatureMat}
-            >
-              <torusGeometry args={[0.11, 0.015, 8, 16, Math.PI * 0.78]} />
-            </mesh>
+              {/* 3D Sculpted Catenary Robe Folds */}
+              <mesh geometry={sculptedGeos.robeFoldPrimary} material={goldStatueMat} castShadow />
+              <mesh geometry={sculptedGeos.robeFoldSecondary} material={goldTrimMat} />
+              <mesh geometry={sculptedGeos.robeFoldRight} material={goldStatueMat} castShadow />
 
-            {/* Elongated Ears of Wisdom */}
-            <mesh
-              position={[-0.66, -0.08, 0]}
-              scale={[0.23, 0.66, 0.28]}
-              material={goldStatueMat}
-            >
-              <sphereGeometry args={[0.56, 16, 14]} />
-            </mesh>
-            <mesh
-              position={[0.66, -0.08, 0]}
-              scale={[0.23, 0.66, 0.28]}
-              material={goldStatueMat}
-            >
-              <sphereGeometry args={[0.56, 16, 14]} />
-            </mesh>
+              {/* C. Graceful Shoulders, Arms, Dhyana Mudra Hands & Sacred Lotus Alms Bowl */}
+              <mesh position={[-1.02, 2.02, 0.04]} scale={[0.92, 0.88, 0.88]} material={goldRobeMat}>
+                <sphereGeometry args={[0.36, 20, 16]} />
+              </mesh>
+              <mesh position={[1.02, 2.02, 0.04]} scale={[0.92, 0.88, 0.88]} material={goldRobeMat}>
+                <sphereGeometry args={[0.36, 20, 16]} />
+              </mesh>
+              {/* Upper Arms */}
+              <mesh
+                position={[-1.08, 1.48, 0.12]}
+                rotation={[0.24, 0, 0.24]}
+                material={goldRobeMat}
+                castShadow
+              >
+                <capsuleGeometry args={[0.26, 0.88, 10, 18]} />
+              </mesh>
+              <mesh
+                position={[1.08, 1.48, 0.12]}
+                rotation={[0.24, 0, -0.24]}
+                material={goldRobeMat}
+                castShadow
+              >
+                <capsuleGeometry args={[0.26, 0.88, 10, 18]} />
+              </mesh>
+              {/* Forearms curving gently inward */}
+              <mesh
+                position={[-0.62, 0.84, 0.54]}
+                rotation={[1.28, 0.34, -0.58]}
+                material={goldStatueMat}
+                castShadow
+              >
+                <capsuleGeometry args={[0.21, 0.72, 10, 16]} />
+              </mesh>
+              <mesh
+                position={[0.62, 0.84, 0.54]}
+                rotation={[1.28, -0.34, 0.58]}
+                material={goldStatueMat}
+                castShadow
+              >
+                <capsuleGeometry args={[0.21, 0.72, 10, 16]} />
+              </mesh>
+              {/* Meditative Palms Joined in Lap (Ấn Thiền Định) */}
+              <mesh
+                position={[-0.14, 0.64, 0.82]}
+                rotation={[0.08, 0.22, 0.06]}
+                scale={[1.25, 0.32, 0.72]}
+                material={goldStatueMat}
+              >
+                <sphereGeometry args={[0.22, 16, 12]} />
+              </mesh>
+              <mesh
+                position={[0.14, 0.68, 0.82]}
+                rotation={[0.08, -0.22, -0.06]}
+                scale={[1.25, 0.32, 0.72]}
+                material={goldStatueMat}
+              >
+                <sphereGeometry args={[0.22, 16, 12]} />
+              </mesh>
+              {/* Turned Golden Alms Bowl & Radiant Mani Lotus Jewel */}
+              <group position={[0, 0.71, 0.84]}>
+                <mesh geometry={sculptedGeos.almsBowl} material={goldTrimMat} castShadow />
+                <mesh position={[0, 0.32, 0]}>
+                  <sphereGeometry args={[0.15, 20, 20]} />
+                  <meshBasicMaterial color="#fff7c4" />
+                </mesh>
+              </group>
 
-            {/* Crown & Ushnisha (Nhục Kế) */}
-            <mesh position={[0, 0.4, -0.04]} scale={[0.96, 0.7, 0.97]} material={goldTrimMat}>
-              <sphereGeometry args={[0.68, 24, 18]} />
-            </mesh>
-            <mesh position={[0, 0.88, -0.02]} material={goldTrimMat}>
-              <sphereGeometry args={[0.3, 20, 16]} />
-            </mesh>
-            <mesh position={[0, 1.12, 0.02]}>
-              <sphereGeometry args={[0.095, 14, 14]} />
-              <meshBasicMaterial color="#fff8d4" />
-            </mesh>
-            {/* Radiant Urna Gem (Bạch Hào) */}
-            <mesh position={[0, 0.2, 0.65]}>
-              <sphereGeometry args={[0.058, 14, 14]} />
-              <meshBasicMaterial color="#fffbe0" />
-            </mesh>
-          </group>
+              {/* D. Auspicious Three-Fold Neck (Tam Đạo Cổ), Serene Face & Spiral Hair Curls */}
+              <group position={[0, 2.52, 0.04]}>
+                <mesh material={goldStatueMat}>
+                  <cylinderGeometry args={[0.34, 0.41, 0.38, 24]} />
+                </mesh>
+                {[-0.07, 0.01, 0.09].map((ny, nIdx) => (
+                  <mesh
+                    key={`neck-fold-${nIdx}`}
+                    position={[0, ny, 0.03]}
+                    rotation={[Math.PI / 2, 0, 0]}
+                    material={goldTrimMat}
+                  >
+                    <torusGeometry args={[0.36 - nIdx * 0.012, 0.014, 8, 24, Math.PI]} />
+                  </mesh>
+                ))}
+              </group>
 
-          {/* 5. Magnificent Multi-Ring Golden Halo Lighting (Hào Quang Cửu Phẩm Liên Hoa) */}
-          <group position={[0, 2.98, -0.74]}>
-            <mesh ref={auraDiscRef} position={[0, 0, -0.18]}>
-              <planeGeometry args={[7.4, 7.4]} />
+              {/* Sculpted Compassionate Head */}
+              <group position={[0, 3.18, 0.08]}>
+                {/* Smooth High-Segment Oval Cranium & Face */}
+                <mesh scale={[0.91, 1.07, 0.95]} material={goldStatueMat} castShadow>
+                  <sphereGeometry args={[0.68, 40, 32]} />
+                </mesh>
+                {/* Soft Compassionate Cheek & Chin Fullness */}
+                <mesh position={[0, -0.2, 0.24]} scale={[0.78, 0.62, 0.72]} material={goldStatueMat}>
+                  <sphereGeometry args={[0.52, 24, 20]} />
+                </mesh>
+
+                {/* Gracefully Arched Willow-Leaf Eyebrows */}
+                <mesh
+                  position={[-0.21, 0.11, 0.59]}
+                  rotation={[0.08, -0.24, -0.12]}
+                  material={buddhaFeatureMat}
+                >
+                  <torusGeometry args={[0.13, 0.014, 10, 20, Math.PI * 0.82]} />
+                </mesh>
+                <mesh
+                  position={[0.21, 0.11, 0.59]}
+                  rotation={[0.08, 0.24, 0.12]}
+                  material={buddhaFeatureMat}
+                >
+                  <torusGeometry args={[0.13, 0.014, 10, 20, Math.PI * 0.82]} />
+                </mesh>
+
+                {/* Serene Half-Closed Meditative Upper Eyelids */}
+                <mesh
+                  position={[-0.21, 0.015, 0.61]}
+                  scale={[1.15, 0.55, 0.5]}
+                  rotation={[0.22, -0.18, 0]}
+                  material={goldTrimMat}
+                >
+                  <sphereGeometry args={[0.085, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+                </mesh>
+                <mesh
+                  position={[0.21, 0.015, 0.61]}
+                  scale={[1.15, 0.55, 0.5]}
+                  rotation={[0.22, 0.18, 0]}
+                  material={goldTrimMat}
+                >
+                  <sphereGeometry args={[0.085, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+                </mesh>
+                {/* Gentle Downward-Gazing Eye Line */}
+                <mesh
+                  position={[-0.21, -0.005, 0.635]}
+                  rotation={[Math.PI * 0.96, -0.2, 0.04]}
+                  material={buddhaFeatureMat}
+                >
+                  <torusGeometry args={[0.088, 0.011, 8, 16, Math.PI * 0.78]} />
+                </mesh>
+                <mesh
+                  position={[0.21, -0.005, 0.635]}
+                  rotation={[Math.PI * 0.96, 0.2, -0.04]}
+                  material={buddhaFeatureMat}
+                >
+                  <torusGeometry args={[0.088, 0.011, 8, 16, Math.PI * 0.78]} />
+                </mesh>
+
+                {/* Refined Straight Nose Bridge & Soft Tip */}
+                <mesh
+                  position={[0, -0.05, 0.64]}
+                  rotation={[-0.2, 0, 0]}
+                  scale={[0.72, 1.0, 0.85]}
+                  material={goldStatueMat}
+                >
+                  <coneGeometry args={[0.078, 0.25, 16]} />
+                </mesh>
+                <mesh position={[0, -0.15, 0.66]} scale={[1.05, 0.75, 0.85]} material={goldStatueMat}>
+                  <sphereGeometry args={[0.052, 14, 12]} />
+                </mesh>
+
+                {/* Serene Compassionate Smile & Sculpted Lips */}
+                <mesh
+                  position={[0, -0.255, 0.6]}
+                  rotation={[Math.PI * 0.9, 0, 0]}
+                  material={buddhaFeatureMat}
+                >
+                  <torusGeometry args={[0.105, 0.013, 10, 18, Math.PI * 0.76]} />
+                </mesh>
+                <mesh
+                  position={[0, -0.28, 0.61]}
+                  scale={[1.4, 0.48, 0.6]}
+                  material={goldTrimMat}
+                >
+                  <sphereGeometry args={[0.068, 14, 10]} />
+                </mesh>
+
+                {/* Elongated Pendulous Earlobes of Wisdom (Tai Dài Phúc Tướng) */}
+                {[-1, 1].map((side) => (
+                  <group key={`ear-${side}`} position={[side * 0.64, -0.06, -0.02]}>
+                    <mesh scale={[0.22, 0.56, 0.28]} material={goldStatueMat}>
+                      <sphereGeometry args={[0.56, 18, 14]} />
+                    </mesh>
+                    <mesh position={[0, -0.34, 0.02]} scale={[0.24, 0.36, 0.24]} material={goldStatueMat}>
+                      <sphereGeometry args={[0.38, 14, 12]} />
+                    </mesh>
+                  </group>
+                ))}
+
+                {/* Cranial Hair Base, Ushnisha (Nhục Kế) & 3D Spiral Hair Curls (Tóc Xoắn Ốc) */}
+                <mesh position={[0, 0.36, -0.03]} scale={[0.95, 0.72, 0.96]} material={buddhaHairMat}>
+                  <sphereGeometry args={[0.67, 28, 20]} />
+                </mesh>
+                <mesh position={[0, 0.82, -0.02]} scale={[1.0, 0.88, 1.0]} material={buddhaHairMat}>
+                  <sphereGeometry args={[0.29, 22, 18]} />
+                </mesh>
+                {hairCurlPositions.map(([hx, hy, hz], cIdx) => (
+                  <mesh key={`curl-${cIdx}`} position={[hx, hy, hz]} material={goldTrimMat}>
+                    <sphereGeometry args={[0.056, 8, 8]} />
+                  </mesh>
+                ))}
+
+                {/* Ushnisha Flame Pearl (Châu Nhục Kế) & Forehead Urna (Bạch Hào Quang) */}
+                <mesh position={[0, 0.66, 0.22]}>
+                  <sphereGeometry args={[0.072, 16, 16]} />
+                  <meshBasicMaterial color="#fff7cc" />
+                </mesh>
+                <mesh position={[0, 1.05, 0.0]}>
+                  <sphereGeometry args={[0.088, 16, 16]} />
+                  <meshBasicMaterial color="#fff9d9" />
+                </mesh>
+                <mesh position={[0, 0.21, 0.635]}>
+                  <sphereGeometry args={[0.05, 16, 16]} />
+                  <meshBasicMaterial color="#fffce6" />
+                </mesh>
+              </group>
+            </group>
+          )}
+
+          {/* 3. Ornate Bodhi-Leaf Mandorla & Concentric Golden Filigree Halo (Hào Quang Bồ Đề)
+                 Calibrated so Halo apex = world Y 12.49 (100% inside 9:16 frame, never cropped!) */}
+          <group position={[0, 2.52, -0.78]}>
+            {/* Soft Golden Sanctuary Bloom Sprite */}
+            <mesh ref={auraDiscRef} position={[0, 0.18, -0.22]}>
+              <planeGeometry args={[6.4, 6.4]} />
               <meshBasicMaterial
                 map={haloGlowTex}
                 transparent
@@ -552,127 +1078,163 @@ export function BuddhaAltar({
               />
             </mesh>
 
-            <group ref={haloRef}>
+            {/* Focused Head Crown Glow */}
+            <mesh ref={crownGlowRef} position={[0, 0.68, -0.14]}>
+              <planeGeometry args={[3.6, 3.6]} />
+              <meshBasicMaterial
+                map={haloGlowTex}
+                transparent
+                opacity={0.85}
+                depthWrite={false}
+                blending={THREE.AdditiveBlending}
+              />
+            </mesh>
+
+            {/* Sculpted Bodhi-Leaf Full-Body Mandorla (Thân Quang Lá Bồ Đề) */}
+            <mesh
+              position={[0, -0.14, -0.1]}
+              geometry={sculptedGeos.bodhiMandorlaRim}
+              material={goldTrimMat}
+            />
+
+            {/* Outer Rotating Filigree Head Halo */}
+            <group ref={haloRef} position={[0, 0.56, 0]}>
               <mesh material={goldStatueMat}>
-                <torusGeometry args={[2.28, 0.068, 12, 60]} />
+                <torusGeometry args={[1.68, 0.056, 14, 64]} />
               </mesh>
               <mesh>
-                <ringGeometry args={[2.32, 2.52, 52]} />
+                <ringGeometry args={[1.72, 1.86, 56]} />
                 <meshBasicMaterial
-                  color="#ffe688"
+                  color="#ffe88f"
                   side={THREE.DoubleSide}
                   transparent
-                  opacity={0.75}
+                  opacity={0.78}
                 />
               </mesh>
-              {Array.from({ length: 20 }, (_, idx) => {
-                const a = (idx / 20) * Math.PI * 2;
+              {Array.from({ length: 24 }, (_, idx) => {
+                const a = (idx / 24) * Math.PI * 2;
                 return (
                   <mesh
                     key={`ray-${idx}`}
-                    position={[Math.cos(a) * 2.02, Math.sin(a) * 2.02, 0]}
+                    position={[Math.cos(a) * 1.48, Math.sin(a) * 1.48, 0]}
                     rotation={[0, 0, a - Math.PI / 2]}
                     material={idx % 2 === 0 ? goldStatueMat : lotusPetalMat}
                   >
-                    <coneGeometry args={[0.09, 0.62, 4]} />
+                    <coneGeometry args={[0.072, 0.44, 5]} />
                   </mesh>
                 );
               })}
             </group>
 
-            <group ref={haloInnerRef}>
+            {/* Inner Counter-Rotating Lotus Halo */}
+            <group ref={haloInnerRef} position={[0, 0.56, 0.04]}>
               <mesh material={goldTrimMat}>
-                <torusGeometry args={[1.62, 0.052, 10, 48]} />
+                <torusGeometry args={[1.18, 0.042, 12, 48]} />
               </mesh>
             </group>
           </group>
         </group>
 
-        {/* Dedicated Golden Buddha Key & Halo Sanctuary Light */}
+        {/* Dedicated Warm Golden Key, Rim & Lotus Pedestal Uplights */}
         <pointLight
           ref={auraLightRef}
-          position={[0, 3.6, 2.5]}
-          color="#ffd782"
-          intensity={15.5}
+          position={[0, 3.55, 2.75]}
+          color="#ffe08c"
+          intensity={15.8}
           distance={28}
           decay={1.4}
+        />
+        <pointLight
+          ref={rimLightRef}
+          position={[0, 3.85, -1.35]}
+          color="#ffc65c"
+          intensity={8.8}
+          distance={18}
+          decay={1.6}
+        />
+        <pointLight
+          position={[0, 0.72, 2.3]}
+          color="#ffcf70"
+          intensity={5.4}
+          distance={12}
+          decay={1.7}
         />
       </group>
 
       {/* ====================================================================
-          LOW GRACEFUL WOODEN OFFERING ALTAR TABLE (Bàn Thờ Hương Án — y = 1.12)
-          Never blocks the Lotus Throne or Buddha; displays offered ceremonies!
+          LOW GRACEFUL WOODEN OFFERING ALTAR TABLE (Bàn Thờ Hương Án — y = 1.04)
+          Positioned strictly below the Lotus Pedestal sightline!
          ==================================================================== */}
       <group position={[0, 0, 2.55]}>
-        <mesh position={[0, 1.12, 0]} material={darkWoodMat} castShadow receiveShadow>
-          <boxGeometry args={[6.2, 0.16, 1.42]} />
+        <mesh position={[0, 1.04, 0]} material={darkWoodMat} castShadow receiveShadow>
+          <boxGeometry args={[5.9, 0.15, 1.36]} />
         </mesh>
-        <mesh position={[0, 0.88, 0.64]} material={goldTrimMat}>
-          <boxGeometry args={[5.8, 0.34, 0.07]} />
+        <mesh position={[0, 0.82, 0.62]} material={goldTrimMat}>
+          <boxGeometry args={[5.5, 0.3, 0.07]} />
         </mesh>
         {[
-          [-2.85, -0.55],
-          [2.85, -0.55],
-          [-2.85, 0.55],
-          [2.85, 0.55],
+          [-2.7, -0.52],
+          [2.7, -0.52],
+          [-2.7, 0.52],
+          [2.7, 0.52],
         ].map(([lx, lz], idx) => (
-          <mesh key={`leg-${idx}`} position={[lx, 0.54, lz]} material={darkWoodMat}>
-            <cylinderGeometry args={[0.1, 0.085, 1.08, 12]} />
+          <mesh key={`leg-${idx}`} position={[lx, 0.5, lz]} material={darkWoodMat}>
+            <cylinderGeometry args={[0.095, 0.08, 1.0, 12]} />
           </mesh>
         ))}
 
         {/* Warm Ceremony Offering Spotlight over Altar Table */}
         <pointLight
           ref={ceremonySpotLightRef}
-          position={[0, 2.6, 0.4]}
+          position={[0, 2.45, 0.4]}
           color="#ffd885"
-          intensity={2.2}
+          intensity={2.4}
           distance={8}
           decay={1.8}
         />
 
         {/* Central Brass Incense Burner (Lư Hương Đồng) */}
-        <group position={[0, 1.2, 0.14]}>
-          <mesh position={[0, 0.22, 0]} material={bronzeMat}>
-            <cylinderGeometry args={[0.32, 0.24, 0.38, 20]} />
+        <group position={[0, 1.12, 0.14]}>
+          <mesh position={[0, 0.2, 0]} material={bronzeMat}>
+            <cylinderGeometry args={[0.3, 0.22, 0.35, 20]} />
           </mesh>
-          <mesh position={[0, 0.42, 0]} material={goldTrimMat}>
-            <torusGeometry args={[0.31, 0.036, 10, 24]} />
+          <mesh position={[0, 0.38, 0]} material={goldTrimMat}>
+            <torusGeometry args={[0.29, 0.034, 10, 24]} />
           </mesh>
           {[-0.08, -0.03, 0.02, 0.07, 0.11].map((ix, i) => (
             <group
               key={`incense-${i}`}
-              position={[ix - 0.02, 0.52, 0]}
+              position={[ix - 0.02, 0.48, 0]}
               rotation={[0, 0, (i - 2) * 0.06]}
             >
               <mesh>
-                <cylinderGeometry args={[0.011, 0.011, 0.42, 6]} />
+                <cylinderGeometry args={[0.011, 0.011, 0.38, 6]} />
                 <meshBasicMaterial color="#9e2a2b" />
               </mesh>
-              <mesh position={[0, 0.22, 0]}>
-                <sphereGeometry args={[0.024, 8, 8]} />
+              <mesh position={[0, 0.2, 0]}>
+                <sphereGeometry args={[0.022, 8, 8]} />
                 <meshBasicMaterial color="#ff7326" />
               </mesh>
             </group>
           ))}
         </group>
 
-        {/* Sacred Golden Reliquary Pagoda (Bảo Tháp Công Đức) behind burner on altar */}
-        <group ref={pagodaAltarGroupRef} position={[0, 1.22, -0.36]}>
-          <mesh position={[0, 0.08, 0]} material={crimsonLacquerMat}>
-            <cylinderGeometry args={[0.22, 0.26, 0.14, 8]} />
+        {/* Sacred Golden Reliquary Pagoda (Bảo Tháp Công Đức) on altar */}
+        <group ref={pagodaAltarGroupRef} position={[0, 1.14, -0.34]}>
+          <mesh position={[0, 0.07, 0]} material={crimsonLacquerMat}>
+            <cylinderGeometry args={[0.2, 0.24, 0.13, 8]} />
           </mesh>
-          <mesh position={[0, 0.24, 0]} material={goldStatueMat}>
-            <cylinderGeometry args={[0.17, 0.23, 0.16, 8]} />
+          <mesh position={[0, 0.22, 0]} material={goldStatueMat}>
+            <cylinderGeometry args={[0.16, 0.21, 0.15, 8]} />
           </mesh>
-          <mesh position={[0, 0.4, 0]} material={goldStatueMat}>
-            <cylinderGeometry args={[0.13, 0.18, 0.15, 8]} />
+          <mesh position={[0, 0.36, 0]} material={goldStatueMat}>
+            <cylinderGeometry args={[0.12, 0.17, 0.14, 8]} />
           </mesh>
-          <mesh position={[0, 0.55, 0]} material={goldStatueMat}>
-            <cylinderGeometry args={[0.095, 0.14, 0.13, 8]} />
+          <mesh position={[0, 0.5, 0]} material={goldStatueMat}>
+            <cylinderGeometry args={[0.09, 0.13, 0.12, 8]} />
           </mesh>
-          <mesh position={[0, 0.72, 0]}>
-            <coneGeometry args={[0.048, 0.24, 8]} />
+          <mesh position={[0, 0.65, 0]}>
+            <coneGeometry args={[0.044, 0.22, 8]} />
             <meshBasicMaterial color="#fff3ad" />
           </mesh>
         </group>
@@ -684,30 +1246,30 @@ export function BuddhaAltar({
             ref={(el) => {
               smokeRefs.current[idx] = el;
             }}
-            position={[0, 1.85 + idx * 0.35, 0.14]}
+            position={[0, 1.72 + idx * 0.3, 0.14]}
           >
-            <sphereGeometry args={[0.2, 10, 10]} />
-            <meshBasicMaterial color="#efe6d5" transparent opacity={0.16} depthWrite={false} />
+            <sphereGeometry args={[0.18, 10, 10]} />
+            <meshBasicMaterial color="#efe6d5" transparent opacity={0.14} depthWrite={false} />
           </mesh>
         ))}
 
         {/* Twin Brass Candlesticks */}
-        {[-1.38, 1.38].map((cx, idx) => (
-          <group key={`candle-${idx}`} position={[cx, 1.2, 0.14]}>
-            <mesh position={[0, 0.18, 0]} material={bronzeMat}>
-              <cylinderGeometry args={[0.075, 0.16, 0.36, 14]} />
+        {[-1.32, 1.32].map((cx, idx) => (
+          <group key={`candle-${idx}`} position={[cx, 1.12, 0.14]}>
+            <mesh position={[0, 0.16, 0]} material={bronzeMat}>
+              <cylinderGeometry args={[0.07, 0.15, 0.32, 14]} />
             </mesh>
-            <mesh position={[0, 0.46, 0]}>
-              <cylinderGeometry args={[0.05, 0.05, 0.28, 12]} />
+            <mesh position={[0, 0.42, 0]}>
+              <cylinderGeometry args={[0.048, 0.048, 0.25, 12]} />
               <meshStandardMaterial color="#b81d24" roughness={0.4} />
             </mesh>
-            <mesh position={[0, 0.66, 0]}>
-              <coneGeometry args={[0.05, 0.16, 10]} />
+            <mesh position={[0, 0.6, 0]}>
+              <coneGeometry args={[0.046, 0.15, 10]} />
               <meshBasicMaterial color="#ffe282" />
             </mesh>
             <pointLight
               ref={idx === 0 ? candleLeftRef : candleRightRef}
-              position={[0, 0.75, 0]}
+              position={[0, 0.68, 0]}
               color="#ffb14d"
               intensity={2.6}
               distance={7.5}
@@ -716,71 +1278,71 @@ export function BuddhaAltar({
           </group>
         ))}
 
-        {/* Twin Glowing Đài Sen Offering Stands (Cầu Tài Lộc — x = ±2.06) */}
-        {[-2.06, 2.06].map((sx, idx) => (
+        {/* Twin Glowing Đài Sen Offering Stands (Cầu Tài Lộc — x = ±1.96) */}
+        {[-1.96, 1.96].map((sx, idx) => (
           <group
             key={`lotus-stand-${idx}`}
             ref={idx === 0 ? lotusStandLeftRef : lotusStandRightRef}
-            position={[sx, 1.22, 0.16]}
+            position={[sx, 1.14, 0.16]}
           >
-            <mesh position={[0, 0.08, 0]} material={goldTrimMat}>
-              <cylinderGeometry args={[0.14, 0.19, 0.14, 12]} />
+            <mesh position={[0, 0.07, 0]} material={goldTrimMat}>
+              <cylinderGeometry args={[0.13, 0.18, 0.13, 12]} />
             </mesh>
-            <mesh position={[0, 0.2, 0]} material={lotusPetalMat}>
-              <cylinderGeometry args={[0.25, 0.14, 0.14, 10]} />
+            <mesh position={[0, 0.18, 0]} material={lotusPetalMat}>
+              <cylinderGeometry args={[0.23, 0.13, 0.13, 10]} />
             </mesh>
-            <mesh position={[0, 0.3, 0]}>
-              <sphereGeometry args={[0.09, 12, 12]} />
+            <mesh position={[0, 0.28, 0]}>
+              <sphereGeometry args={[0.085, 12, 12]} />
               <meshBasicMaterial color="#fff3b0" />
             </mesh>
           </group>
         ))}
 
-        {/* Twin Porcelain Flower Vases (Hoa Hồng / Hoa Sen — x = ±2.62) */}
-        {[-2.62, 2.62].map((vx, idx) => (
-          <group key={`vase-${idx}`} position={[vx, 1.2, -0.06]}>
-            <mesh position={[0, 0.26, 0]}>
-              <cylinderGeometry args={[0.13, 0.2, 0.52, 16]} />
+        {/* Twin Porcelain Flower Vases (Hoa Hồng / Hoa Sen — x = ±2.48) */}
+        {[-2.48, 2.48].map((vx, idx) => (
+          <group key={`vase-${idx}`} position={[vx, 1.12, -0.06]}>
+            <mesh position={[0, 0.24, 0]}>
+              <cylinderGeometry args={[0.12, 0.18, 0.48, 16]} />
               <meshStandardMaterial color="#dfd6c3" roughness={0.25} metalness={0.1} />
             </mesh>
             {[
-              [0, 0.7, 0],
-              [-0.13, 0.64, 0.07],
-              [0.13, 0.64, -0.05],
+              [0, 0.64, 0],
+              [-0.12, 0.58, 0.06],
+              [0.12, 0.58, -0.05],
             ].map(([bx, by, bz], bi) => (
               <group key={`bud-${bi}`} position={[bx, by, bz]}>
-                <mesh position={[0, -0.14, 0]}>
-                  <cylinderGeometry args={[0.016, 0.016, 0.3, 6]} />
+                <mesh position={[0, -0.12, 0]}>
+                  <cylinderGeometry args={[0.015, 0.015, 0.26, 6]} />
                   <meshStandardMaterial color="#3c6e47" roughness={0.6} />
                 </mesh>
                 <mesh material={bi === 0 ? goldStatueMat : lotusPetalMat}>
-                  <coneGeometry args={[0.1, 0.24, 8]} />
+                  <coneGeometry args={[0.092, 0.22, 8]} />
                 </mesh>
               </group>
             ))}
           </group>
         ))}
 
-        {/* Decorated Five-Fruit Offering Trays (Mâm Ngũ Quả — x = ±0.78) */}
-        {[-0.78, 0.78].map((fx, idx) => (
-          <group key={`fruit-${idx}`} position={[fx, 1.2, 0.24]}>
-            <mesh position={[0, 0.06, 0]} material={goldTrimMat}>
-              <cylinderGeometry args={[0.29, 0.16, 0.12, 16]} />
+        {/* Decorated Five-Fruit Offering Trays (Mâm Ngũ Quả — x = ±0.74) */}
+        {[-0.74, 0.74].map((fx, idx) => (
+          <group key={`fruit-${idx}`} position={[fx, 1.12, 0.22]}>
+            <mesh position={[0, 0.055, 0]} material={goldTrimMat}>
+              <cylinderGeometry args={[0.27, 0.15, 0.11, 16]} />
             </mesh>
-            <mesh position={[-0.08, 0.16, 0.04]}>
-              <sphereGeometry args={[0.085, 12, 12]} />
+            <mesh position={[-0.075, 0.15, 0.04]}>
+              <sphereGeometry args={[0.08, 12, 12]} />
               <meshStandardMaterial color="#e07a24" roughness={0.38} />
             </mesh>
-            <mesh position={[0.09, 0.16, -0.03]}>
-              <sphereGeometry args={[0.08, 12, 12]} />
+            <mesh position={[0.085, 0.15, -0.03]}>
+              <sphereGeometry args={[0.075, 12, 12]} />
               <meshStandardMaterial color="#7cb518" roughness={0.44} />
             </mesh>
-            <mesh position={[0, 0.23, 0]}>
-              <sphereGeometry args={[0.085, 12, 12]} />
+            <mesh position={[0, 0.21, 0]}>
+              <sphereGeometry args={[0.08, 12, 12]} />
               <meshStandardMaterial color="#f3c623" roughness={0.34} />
             </mesh>
-            <mesh position={[0, 0.16, -0.09]}>
-              <sphereGeometry args={[0.075, 10, 10]} />
+            <mesh position={[0, 0.15, -0.085]}>
+              <sphereGeometry args={[0.07, 10, 10]} />
               <meshStandardMaterial color="#d62839" roughness={0.38} />
             </mesh>
           </group>
@@ -789,30 +1351,29 @@ export function BuddhaAltar({
 
       {/* ====================================================================
           CENTER GOLDEN CEREMONIAL MANDALA CUSHION (Đài Cúng Dường Bảo Tháp)
-          World Z = -12.4 + 4.24 = -8.16
          ==================================================================== */}
       <group position={[0, 0.02, 4.24]}>
         <mesh rotation={[-Math.PI / 2, 0, 0]} material={goldTrimMat}>
-          <ringGeometry args={[0.58, 0.74, 32]} />
+          <ringGeometry args={[0.54, 0.7, 32]} />
         </mesh>
         <mesh position={[0, 0.02, 0]} material={crimsonLacquerMat}>
-          <cylinderGeometry args={[0.56, 0.62, 0.05, 24]} />
+          <cylinderGeometry args={[0.52, 0.58, 0.05, 24]} />
         </mesh>
       </group>
 
       {/* ====================================================================
-          TWIN SACRED LOTUS LANTERN BASINS (Liên Hoa Thủy Trì — x = ±2.62)
+          TWIN SACRED LOTUS LANTERN BASINS (Liên Hoa Thủy Trì — x = ±2.52)
          ==================================================================== */}
-      {[-2.62, 2.62].map((bx, bIdx) => (
+      {[-2.52, 2.52].map((bx, bIdx) => (
         <group key={`lantern-basin-${bIdx}`} position={[bx, 0, 3.48]}>
           <mesh position={[0, 0.22, 0]} material={darkWoodMat}>
-            <cylinderGeometry args={[0.92, 0.84, 0.44, 16]} />
+            <cylinderGeometry args={[0.88, 0.8, 0.44, 16]} />
           </mesh>
           <mesh position={[0, 0.44, 0]} material={goldTrimMat}>
-            <torusGeometry args={[0.88, 0.05, 10, 24]} />
+            <torusGeometry args={[0.84, 0.048, 10, 24]} />
           </mesh>
           <mesh position={[0, 0.4, 0]} material={jadeWaterMat}>
-            <cylinderGeometry args={[0.84, 0.84, 0.04, 24]} />
+            <cylinderGeometry args={[0.8, 0.8, 0.04, 24]} />
           </mesh>
         </group>
       ))}
@@ -839,40 +1400,40 @@ export function BuddhaAltar({
       </group>
 
       {/* ====================================================================
-          INTERACTIVE BRONZE TEMPLE BELL STAND (Chuông Đồng — x = 4.25)
+          INTERACTIVE BRONZE TEMPLE BELL STAND (Chuông Đồng — x = 3.82, inside 9:16 frame!)
          ==================================================================== */}
-      <group position={[4.25, 0.15, 2.85]}>
-        <mesh position={[-0.68, 1.55, 0]} material={darkWoodMat}>
-          <cylinderGeometry args={[0.09, 0.11, 3.1, 12]} />
+      <group position={[3.82, 0.15, 2.85]}>
+        <mesh position={[-0.64, 1.48, 0]} material={darkWoodMat}>
+          <cylinderGeometry args={[0.085, 0.105, 2.96, 12]} />
         </mesh>
-        <mesh position={[0.68, 1.55, 0]} material={darkWoodMat}>
-          <cylinderGeometry args={[0.09, 0.11, 3.1, 12]} />
+        <mesh position={[0.64, 1.48, 0]} material={darkWoodMat}>
+          <cylinderGeometry args={[0.085, 0.105, 2.96, 12]} />
         </mesh>
-        <mesh position={[0, 3.05, 0]} rotation={[0, 0, Math.PI / 2]} material={darkWoodMat}>
-          <cylinderGeometry args={[0.11, 0.11, 1.78, 12]} />
+        <mesh position={[0, 2.92, 0]} rotation={[0, 0, Math.PI / 2]} material={darkWoodMat}>
+          <cylinderGeometry args={[0.105, 0.105, 1.68, 12]} />
         </mesh>
-        <mesh position={[0, 3.22, 0]} material={goldTrimMat}>
-          <boxGeometry args={[1.85, 0.16, 0.24]} />
+        <mesh position={[0, 3.08, 0]} material={goldTrimMat}>
+          <boxGeometry args={[1.74, 0.15, 0.22]} />
         </mesh>
 
-        <group ref={bellSwingGroupRef} position={[0, 2.95, 0]}>
-          <mesh position={[0, -0.22, 0]} material={goldTrimMat}>
-            <cylinderGeometry args={[0.06, 0.06, 0.4, 8]} />
+        <group ref={bellSwingGroupRef} position={[0, 2.82, 0]}>
+          <mesh position={[0, -0.2, 0]} material={goldTrimMat}>
+            <cylinderGeometry args={[0.055, 0.055, 0.38, 8]} />
           </mesh>
-          <mesh position={[0, -0.92, 0]} material={bronzeMat} castShadow>
-            <cylinderGeometry args={[0.38, 0.58, 1.26, 24]} />
+          <mesh position={[0, -0.88, 0]} material={bronzeMat} castShadow>
+            <cylinderGeometry args={[0.36, 0.55, 1.2, 24]} />
           </mesh>
-          <mesh position={[0, -1.48, 0]} material={goldTrimMat}>
-            <torusGeometry args={[0.56, 0.04, 10, 24]} />
+          <mesh position={[0, -1.42, 0]} material={goldTrimMat}>
+            <torusGeometry args={[0.53, 0.038, 10, 24]} />
           </mesh>
         </group>
 
-        <group ref={bellStrikerRef} position={[-0.68, 1.95, 0]}>
+        <group ref={bellStrikerRef} position={[-0.64, 1.88, 0]}>
           <mesh rotation={[0, 0, Math.PI / 2]} material={crimsonLacquerMat}>
-            <cylinderGeometry args={[0.065, 0.065, 0.72, 10]} />
+            <cylinderGeometry args={[0.06, 0.06, 0.68, 10]} />
           </mesh>
-          <mesh position={[0.36, 0, 0]} material={goldTrimMat}>
-            <sphereGeometry args={[0.075, 10, 10]} />
+          <mesh position={[0.34, 0, 0]} material={goldTrimMat}>
+            <sphereGeometry args={[0.07, 10, 10]} />
           </mesh>
         </group>
 
@@ -882,7 +1443,7 @@ export function BuddhaAltar({
           position={[0, 0.05, 0]}
           visible={false}
         >
-          <ringGeometry args={[0.55, 0.72, 32]} />
+          <ringGeometry args={[0.52, 0.68, 32]} />
           <meshBasicMaterial
             color="#ffe07d"
             transparent

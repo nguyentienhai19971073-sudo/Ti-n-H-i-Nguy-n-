@@ -220,9 +220,11 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     notifiedArrival: false,
     activeWoodenFishId: null as string | null,
     strikesPlayedCount: 0,
+    wasDeparting: false,
+    finalizedDeparture: false,
   });
 
-  // React to seat reassignments, dispatched Altar Ceremonies, or queued Wooden Fish milestones
+  // React to seat reassignments, 120s inactivity departure/cancellation, Altar Ceremonies, or Wooden Fish milestones
   useEffect(() => {
     if (kin.current.initializedSeatIdx !== participant.seatIndex) {
       kin.current.initializedSeatIdx = participant.seatIndex;
@@ -233,7 +235,37 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       kin.current.activeWoodenFishId = null;
       kin.current.strikesPlayedCount = 0;
       kin.current.notifiedArrival = false;
+      kin.current.wasDeparting = false;
+      kin.current.finalizedDeparture = false;
       kin.current.stage = 'bowing';
+      kin.current.stageTimer = 0;
+      return;
+    }
+
+    // 120-Second Inactivity Departure Triggered
+    if (participant.isDeparting) {
+      if (!kin.current.wasDeparting) {
+        kin.current.wasDeparting = true;
+        kin.current.finalizedDeparture = false;
+        kin.current.activeRitualId = null;
+        kin.current.activeWoodenFishId = null;
+        kin.current.stage = 'departing_standing';
+        kin.current.stageTimer = 0;
+      }
+      return;
+    }
+
+    // Mid-Departure Cancellation (User sent a new comment, gift, like, follow, or share before leaving!)
+    if (!participant.isDeparting && kin.current.wasDeparting) {
+      kin.current.wasDeparting = false;
+      kin.current.finalizedDeparture = false;
+      if (participant.activeRitual) {
+        kin.current.activeRitualId = participant.activeRitual.id;
+        kin.current.notifiedArrival = false;
+        kin.current.stage = 'walking_to_altar';
+      } else {
+        kin.current.stage = 'returning_from_altar';
+      }
       kin.current.stageTimer = 0;
       return;
     }
@@ -291,6 +323,7 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       }
     }
   }, [
+    participant.isDeparting,
     participant.activeRitual,
     participant.activeWoodenFish,
     participant.animState,
@@ -363,12 +396,17 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           showFruitTray = true;
           break;
         case 'altar_lotus_pedestal':
+        case 'glowing_lotus':
           handsJoined = true;
           showLotusPedestal = true;
           break;
         case 'altar_pagoda':
           handsJoined = true;
           showPagoda = true;
+          break;
+        case 'altar_pray_clasped':
+        case 'golden_light':
+          handsJoined = true;
           break;
         default:
           break;
@@ -499,7 +537,7 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           break;
         }
         targetRotY = ritual.faceRotY;
-        const rDurSec = Math.max(2.8, ritual.durationMs / 1000);
+        const rDurSec = Math.max(1.5, ritual.durationMs / 1000);
         const progress = Math.min(1, k.stageTimer / rDurSec);
 
         switch (ritual.type) {
@@ -514,7 +552,6 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           }
 
           case 'altar_flower': {
-            // Hoa Hồng – Cầu Bình An: Carry flowers, offer them forward, and bow respectfully
             isKneelingPosture = progress >= 0.32;
             handsJoined = true;
             showFlower = progress < 0.72;
@@ -525,10 +562,9 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           }
 
           case 'altar_fruit_tray': {
-            // Mâm Quả – Cầu Gia Đạo: Place decorated 5-fruit tray at offering station & bow respectfully
             isKneelingPosture = progress >= 0.42;
             handsJoined = true;
-            showFruitTray = progress < 0.56; // Placed onto the illuminated altar table at 56%!
+            showFruitTray = progress < 0.56;
             showBlessRing = true;
             targetTorsoPitch =
               progress < 0.56
@@ -537,15 +573,52 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
             break;
           }
 
-          case 'altar_lotus_pedestal': {
-            // Đài Sen – Cầu Tài Lộc: Present glowing lotus pedestal with swirling lotus-petal aura & bow
+          case 'altar_lotus_pedestal':
+          case 'glowing_lotus': {
             isKneelingPosture = true;
             handsJoined = true;
-            showLotusPedestal = progress < 0.78;
+            showLotusPedestal = progress < 0.8;
             showBlessRing = true;
             showGrandRing = true;
             const bowWave = Math.sin(progress * Math.PI * 2);
             targetTorsoPitch = 0.18 + Math.max(0, bowWave) * 0.54;
+            break;
+          }
+
+          case 'altar_pray_clasped': {
+            isKneelingPosture = true;
+            handsJoined = true;
+            showBlessRing = true;
+            const prayWave = Math.sin(progress * Math.PI * 2);
+            targetTorsoPitch = 0.16 + Math.max(0, prayWave) * 0.66;
+            break;
+          }
+
+          case 'golden_light': {
+            isKneelingPosture = true;
+            handsJoined = true;
+            showBlessRing = true;
+            showGrandRing = true;
+            const lightBow = Math.sin(progress * Math.PI * 2);
+            targetTorsoPitch = 0.14 + Math.max(0, lightBow) * 0.6;
+            break;
+          }
+
+          case 'altar_wooden_fish': {
+            isKneelingPosture = true;
+            handsJoined = false;
+            showWoodenFish = true;
+            showBlessRing = true;
+            const strikes = 4;
+            const phase = (progress * strikes) % 1;
+            const isImpact = phase >= 0.4 && phase <= 0.6;
+            woodenFishRecoil = isImpact ? 1.12 : 1.0;
+            targetTorsoPitch = 0.1 + Math.sin(phase * Math.PI) * 0.12;
+            customLeftArmPitch = -1.04;
+            customRightArmPitch =
+              phase < 0.44
+                ? THREE.MathUtils.lerp(-0.92, -1.36, phase / 0.44)
+                : THREE.MathUtils.lerp(-0.66, -0.95, Math.min(1, (phase - 0.44) / 0.56));
             break;
           }
 
@@ -562,7 +635,6 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           }
 
           case 'altar_bell': {
-            // Chuông Đồng – Cầu Sức Khỏe: Walk to bell station, bow, and strike the bronze bell
             isKneelingPosture = false;
             handsJoined = true;
             showBlessRing = true;
@@ -576,16 +648,48 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           case 'altar_pagoda':
           case 'altar_grand_ceremony':
           default: {
-            // Bảo Tháp – Cầu Công Đức: Present 5-tiered Golden Pagoda + 3 deep ceremonial prostrations (Tam Bái)
             isKneelingPosture = true;
             handsJoined = true;
-            showPagoda = progress < 0.42; // Presented then enshrined on sanctuary altar!
+            showPagoda = progress < 0.42;
             showBlessRing = true;
             showGrandRing = true;
             const prostrationWave = Math.sin(progress * Math.PI * 3);
             targetTorsoPitch = Math.max(0, prostrationWave) * 0.84;
             break;
           }
+        }
+
+        // Apply explicit characterAnimation style override if configured in GiftMapping
+        if (ritual.characterAnimation === 'walk_prostrate_3') {
+          isKneelingPosture = true;
+          showGrandRing = true;
+          targetTorsoPitch = Math.max(0, Math.sin(progress * Math.PI * 3)) * 0.84;
+        } else if (ritual.characterAnimation === 'walk_kneel_pray') {
+          isKneelingPosture = true;
+          handsJoined = true;
+          targetTorsoPitch = 0.16 + Math.max(0, Math.sin(progress * Math.PI * 2)) * 0.64;
+        } else if (
+          ritual.characterAnimation === 'walk_wooden_fish' &&
+          ritual.type !== 'altar_wooden_fish'
+        ) {
+          isKneelingPosture = true;
+          handsJoined = false;
+          showWoodenFish = true;
+          const phase = (progress * 4) % 1;
+          woodenFishRecoil = phase >= 0.4 && phase <= 0.6 ? 1.12 : 1.0;
+          customLeftArmPitch = -1.04;
+          customRightArmPitch =
+            phase < 0.44
+              ? THREE.MathUtils.lerp(-0.92, -1.36, phase / 0.44)
+              : THREE.MathUtils.lerp(-0.66, -0.95, Math.min(1, (phase - 0.44) / 0.56));
+        } else if (
+          ritual.characterAnimation === 'walk_ring_bell' &&
+          ritual.type !== 'altar_bell'
+        ) {
+          isKneelingPosture = false;
+          const strikePulse = Math.sin(progress * Math.PI * 2.5);
+          customLeftArmPitch = -1.15 - Math.max(0, strikePulse) * 0.48;
+          customRightArmPitch = -1.15 - Math.max(0, strikePulse) * 0.48;
         }
 
         if (k.stageTimer >= rDurSec) {
@@ -598,7 +702,7 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       // === RETURN JOURNEY FROM ALTAR BACK TO EXACT ORIGINAL RESERVED SEAT ===
       case 'returning_from_altar': {
         isWalking = true;
-        const returnLaneX = ritual ? ritual.returnLaneX : seat.side === 'left' ? -1.04 : 1.04;
+        const returnLaneX = ritual ? ritual.returnLaneX : seat.side === 'left' ? -0.84 : 0.84;
         const dx = returnLaneX - k.x;
         const dz = seat.aisleZ - k.z;
         const dist = Math.hypot(dx, dz);
@@ -631,6 +735,67 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           k.stageTimer = 0;
         } else {
           k.x += Math.sign(dx) * step;
+        }
+        break;
+      }
+
+      // === 120-SECOND INACTIVITY DEPARTURE CEREMONY (Stand Up -> Bow -> Walk Out -> Remove) ===
+      case 'departing_standing': {
+        targetRotY = Math.PI;
+        isKneelingPosture = false;
+        handsJoined = true;
+        const standBow = Math.sin(Math.min(1, k.stageTimer / 0.62) * Math.PI);
+        targetTorsoPitch = Math.max(0, standBow) * 0.44;
+        if (k.stageTimer >= 0.64) {
+          k.stage = 'departing_row';
+          k.stageTimer = 0;
+        }
+        break;
+      }
+
+      case 'departing_row': {
+        isWalking = true;
+        handsJoined = true;
+        k.z = THREE.MathUtils.damp(k.z, seat.aisleZ, 10, delta);
+        const exitLaneX = seat.side === 'left' ? -0.66 : 0.66;
+        const dx = exitLaneX - k.x;
+        targetRotY = dx >= 0 ? Math.PI / 2 : -Math.PI / 2;
+        const step = walkSpeed * 0.98 * delta;
+        if (Math.abs(dx) <= step * 1.25) {
+          k.x = exitLaneX;
+          k.z = seat.aisleZ;
+          k.stage = 'departing_exit';
+          k.stageTimer = 0;
+        } else {
+          k.x += Math.sign(dx) * step;
+        }
+        break;
+      }
+
+      case 'departing_exit': {
+        isWalking = true;
+        targetRotY = 0; // Face +Z toward the temple entrance/exit!
+        const exitLaneX = seat.side === 'left' ? -0.66 : 0.66;
+        k.x = THREE.MathUtils.damp(k.x, exitLaneX, 8, delta);
+        const step = walkSpeed * 1.12 * delta;
+        if (k.z >= ENTRANCE_Z - 0.15) {
+          k.z = ENTRANCE_Z;
+          k.stage = 'departing_fade';
+          k.stageTimer = 0;
+        } else {
+          k.z += step;
+        }
+        break;
+      }
+
+      case 'departing_fade': {
+        targetRotY = Math.PI;
+        isKneelingPosture = false;
+        handsJoined = true;
+        targetTorsoPitch = Math.sin(Math.min(1, k.stageTimer / 0.42) * Math.PI) * 0.42;
+        if (k.stageTimer >= 0.42 && !k.finalizedDeparture) {
+          k.finalizedDeparture = true;
+          tiktokEventManager.finalizeParticipantDeparture(participant.userId);
         }
         break;
       }

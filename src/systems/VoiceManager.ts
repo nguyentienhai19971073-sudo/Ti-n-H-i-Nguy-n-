@@ -1,5 +1,6 @@
 import {
   AnnouncementPriority,
+  DEFAULT_COMMENT_VOICE_FORMULA,
   DEFAULT_PEACEFUL_MESSAGES,
   DEFAULT_VOICE_SETTINGS,
   VieNeuMode,
@@ -10,12 +11,23 @@ import {
 import { soundSynthesizer } from './SoundSynthesizer';
 import { TTSConnectionTestOutcome, TTSProviderManager } from './TTSProviderManager';
 
+export type AnnouncementCategory =
+  | 'large_gift'
+  | 'gift'
+  | 'special_ritual'
+  | 'prayer_comment'
+  | 'ordinary_comment'
+  | 'background';
+
 export interface QueuedAnnouncement {
   id: string;
   text: string;
   priority: AnnouncementPriority;
-  category: 'large_gift' | 'gift' | 'milestone' | 'welcome' | 'comment' | 'follow' | 'background';
+  category: AnnouncementCategory;
   dedupeKey: string;
+  userId?: string;
+  username?: string;
+  isDemo?: boolean;
   playBellBeforeSpeech?: boolean;
   createdAt: number;
 }
@@ -24,6 +36,9 @@ export interface VoiceStateSnapshot {
   audioEnabled: boolean;
   isSpeaking: boolean;
   currentSubtitle: string;
+  currentSpeakerUserId: string | null;
+  currentSpeakerUsername: string | null;
+  currentPriority: AnnouncementPriority | null;
   queueLength: number;
   apiStatus: VoiceApiConnectionState;
   lastProviderLabel: string;
@@ -31,25 +46,170 @@ export interface VoiceStateSnapshot {
   lastWarning: string;
 }
 
+export type CommentModerationSkipReason =
+  | 'empty'
+  | 'too_short'
+  | 'exceeds_max_length'
+  | 'no_letters'
+  | 'unsafe_or_spam';
+
+export interface CommentModerationResult {
+  allowed: boolean;
+  normalizedComment: string;
+  reason?: CommentModerationSkipReason;
+}
+
+export interface FormattedCommentSpeechResult {
+  allowed: boolean;
+  text: string;
+  normalizedComment: string;
+  spokenUsername: string;
+  reason?: CommentModerationSkipReason;
+}
+
 type VoiceStateListener = (snapshot: VoiceStateSnapshot) => void;
 
+const SPAM_OR_URL_REGEX = /(https?:\/\/|www\.|\.com\b|\.vn\b|telegram|zalo\s*\d|\d{8,})/i;
+const UNSAFE_COMMENT_REGEX =
+  /\b(đm|địt|vl|vcl|đéo|lừa\s*đảo|cờ\s*bạc|casino|bet88|kubet|fuck|shit|scam)\b/i;
+const REPEATED_CHAR_SPAM_REGEX = /(.)\1{5,}/u;
+const HAS_LETTER_REGEX = /\p{L}/u;
+
+/**
+ * Normalizes a TikTok username into natural spoken Vietnamese form so VieNeuTTS
+ * reads cleanly without spelling out @, underscores, or dots.
+ */
+export function normalizeSpeechUsername(rawName: string): string {
+  const cleaned = String(rawName || '')
+    .normalize('NFC')
+    .replace(/^@+/, '')
+    .replace(/[._-]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 32);
+  return cleaned || 'Phật tử';
+}
+
+/**
+ * Moderates and normalizes a viewer's real TikTok comment for VieNeuTTS narration.
+ * - Normalizes ONLY Unicode NFC and whitespace (never summarizes, paraphrases, or appends invented wishes).
+ * - Skips unsafe, spammy, or overly long comments cleanly rather than rewriting or truncating their meaning.
+ */
+export function moderateAndNormalizeCommentForSpeech(
+  rawComment: string,
+  options?: {
+    maxCommentLength?: number;
+    blockSpamLinksAndUnsafe?: boolean;
+  },
+): CommentModerationResult {
+  const maxLen = Math.max(15, Math.min(240, Math.round(options?.maxCommentLength ?? 90)));
+  const blockUnsafe = options?.blockSpamLinksAndUnsafe !== false;
+
+  const normalized = String(rawComment || '')
+    .normalize('NFC')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) {
+    return { allowed: false, normalizedComment: '', reason: 'empty' };
+  }
+  if (normalized.length < 2) {
+    return { allowed: false, normalizedComment: '', reason: 'too_short' };
+  }
+  if (normalized.length > maxLen) {
+    return { allowed: false, normalizedComment: '', reason: 'exceeds_max_length' };
+  }
+  if (!HAS_LETTER_REGEX.test(normalized)) {
+    return { allowed: false, normalizedComment: '', reason: 'no_letters' };
+  }
+  if (blockUnsafe) {
+    if (
+      SPAM_OR_URL_REGEX.test(normalized) ||
+      UNSAFE_COMMENT_REGEX.test(normalized) ||
+      REPEATED_CHAR_SPAM_REGEX.test(normalized)
+    ) {
+      return { allowed: false, normalizedComment: '', reason: 'unsafe_or_spam' };
+    }
+  }
+
+  return { allowed: true, normalizedComment: normalized };
+}
+
+/**
+ * Builds the exact Vietnamese narration string to send to VieNeuTTS using the administrator's
+ * configurable comment formula (`{username}`, `{comment}`) while preserving the viewer's exact words.
+ */
+export function formatCommentSpeechFormula(
+  formula: string | undefined,
+  rawUsername: string,
+  rawComment: string,
+  options?: {
+    maxCommentLength?: number;
+    blockSpamLinksAndUnsafe?: boolean;
+  },
+): FormattedCommentSpeechResult {
+  const mod = moderateAndNormalizeCommentForSpeech(rawComment, options);
+  const spokenUsername = normalizeSpeechUsername(rawUsername);
+  if (!mod.allowed) {
+    return {
+      allowed: false,
+      text: '',
+      normalizedComment: '',
+      spokenUsername,
+      reason: mod.reason,
+    };
+  }
+
+  const effectiveFormula = formula?.trim() || DEFAULT_COMMENT_VOICE_FORMULA;
+  const text = effectiveFormula
+    .replace(/\{username\}/gi, () => spokenUsername)
+    .replace(/\{comment\}/gi, () => mod.normalizedComment)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return {
+    allowed: true,
+    text,
+    normalizedComment: mod.normalizedComment,
+    spokenUsername,
+  };
+}
+
+/**
+ * Backwards-compatible helper returning normalized comment text or null if skipped by moderation.
+ */
+export function normalizeCommentForSpeech(
+  rawComment: string,
+  maxCommentLength = 90,
+): string | null {
+  const res = moderateAndNormalizeCommentForSpeech(rawComment, { maxCommentLength });
+  return res.allowed ? res.normalizedComment : null;
+}
+
 export class SmartVoiceManager {
-  private static readonly MAX_QUEUE_LENGTH = 12;
+  private static readonly MAX_QUEUE_LENGTH = 16;
+
   private queue: QueuedAnnouncement[] = [];
   private settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS };
   private providerManager = new TTSProviderManager();
 
   private audioEnabled = false;
   private isSpeaking = false;
+  private currentItem: QueuedAnnouncement | null = null;
   private currentSubtitle = '';
   private apiStatus: VoiceApiConnectionState = 'untested';
   private lastProviderLabel = 'VieNeu Cloud';
   private lastLatencyMs: number | null = null;
   private lastWarning = '';
   private currentAbort: AbortController | null = null;
+  private interruptedByGift = false;
 
   private recentDedupeMap = new Map<string, number>();
-  private categoryLastEnqueued = new Map<string, number>();
+  private categoryLastEnqueued = new Map<AnnouncementCategory, number>();
+  private userCommentSpokenMap = new Map<string, number>();
   private peacefulIndex = 0;
   private backgroundTimer: number | null = null;
   private lastSpokenEndedAt = 0;
@@ -79,6 +239,9 @@ export class SmartVoiceManager {
       audioEnabled: this.audioEnabled,
       isSpeaking: this.isSpeaking,
       currentSubtitle: this.currentSubtitle,
+      currentSpeakerUserId: this.currentItem?.userId ?? null,
+      currentSpeakerUsername: this.currentItem?.username ?? null,
+      currentPriority: this.currentItem?.priority ?? null,
       queueLength: this.queue.length,
       apiStatus: this.apiStatus,
       lastProviderLabel: this.lastProviderLabel,
@@ -119,7 +282,10 @@ export class SmartVoiceManager {
       this.settings.vieneuMode !== next.vieneuMode ||
       this.settings.localEndpoint !== next.localEndpoint;
 
-    this.settings = { ...next };
+    this.settings = {
+      ...next,
+      commentTemplates: { ...next.commentTemplates },
+    };
 
     if (providerChanged) {
       this.apiStatus = 'untested';
@@ -142,7 +308,10 @@ export class SmartVoiceManager {
     return this.settings;
   }
 
-  public async fetchVoices(mode: VieNeuMode, localEndpoint?: string): Promise<{
+  public async fetchVoices(
+    mode: VieNeuMode,
+    localEndpoint?: string,
+  ): Promise<{
     ok: boolean;
     voices: VieNeuVoiceOption[];
     effectiveEndpoint: string;
@@ -184,6 +353,7 @@ export class SmartVoiceManager {
   }
 
   private setupBackgroundNarrationTimer(): void {
+    if (typeof window === 'undefined') return;
     if (this.backgroundTimer !== null) {
       window.clearInterval(this.backgroundTimer);
       this.backgroundTimer = null;
@@ -237,54 +407,151 @@ export class SmartVoiceManager {
     });
   }
 
+  public getQueueSnapshot(): ReadonlyArray<QueuedAnnouncement> {
+    return [...this.queue];
+  }
+
+  public getCurrentSpeakingItem(): QueuedAnnouncement | null {
+    return this.currentItem ? { ...this.currentItem } : null;
+  }
+
+  private pruneStaleQueueItems(now: number): void {
+    if (this.queue.length === 0) return;
+    const staleCommentMs = Math.max(5, this.settings.staleCommentTimeoutSec || 20) * 1000;
+    this.queue = this.queue.filter((item) => {
+      // Never drop pending gifts or special rituals unless truly ancient (>90s)
+      if (item.priority <= AnnouncementPriority.SPECIAL_RITUAL) {
+        return now - item.createdAt < 90000;
+      }
+      // Drop stale queued comments or background narration older than configured timeout
+      return now - item.createdAt < staleCommentMs;
+    });
+  }
+
   public enqueue(params: {
     text: string;
     priority: AnnouncementPriority;
-    category: QueuedAnnouncement['category'];
+    category: AnnouncementCategory;
     dedupeKey?: string;
+    userId?: string;
+    username?: string;
+    isDemo?: boolean;
     playBellBeforeSpeech?: boolean;
     bypassRateLimit?: boolean;
   }): void {
     if (!this.settings.autoNarrationEnabled && !params.bypassRateLimit) return;
 
-    const cleanText = params.text.replace(/\s+/g, ' ').trim();
+    const cleanText = params.text.normalize('NFC').replace(/\s+/g, ' ').trim();
     if (!cleanText) return;
 
     const now = Date.now();
-    const dedupeKey = params.dedupeKey || cleanText;
+    this.pruneStaleQueueItems(now);
 
-    // Anti-spam & duplicate message suppression
+    const dedupeKey = params.dedupeKey || cleanText;
+    const isGift = params.priority <= AnnouncementPriority.NORMAL_GIFT;
+    const isComment =
+      params.priority === AnnouncementPriority.PRAYER_COMMENT ||
+      params.priority === AnnouncementPriority.ORDINARY_COMMENT;
+
     if (!params.bypassRateLimit) {
+      // Prevent duplicate playback of identical dedupeKey
       const prevDedupe = this.recentDedupeMap.get(dedupeKey);
-      if (prevDedupe && now - prevDedupe < 12000) {
+      const dedupeWindowMs = isGift ? 4500 : 12000;
+      if (prevDedupe && now - prevDedupe < dedupeWindowMs) {
+        return;
+      }
+      if (this.queue.some((q) => q.dedupeKey === dedupeKey)) {
         return;
       }
 
-      const catCooldowns: Record<QueuedAnnouncement['category'], number> = {
-        large_gift: 250,
-        gift: 350,
-        milestone: 2500,
-        welcome: 5500,
-        comment: 8500,
-        follow: 9000,
+      // Per-user comment narration rate limit to prevent spam overload
+      if (isComment && params.userId) {
+        const lastUserSpoken = this.userCommentSpokenMap.get(params.userId) || 0;
+        const userCooldownMs = params.isDemo
+          ? 1500
+          : Math.max(2, this.settings.perUserCommentCooldownSec) * 1000;
+        if (now - lastUserSpoken < userCooldownMs) {
+          return;
+        }
+        // Replace any older still-queued comment from the same user so only their newest wish is read
+        const existingUserCommentIdx = this.queue.findIndex(
+          (q) =>
+            q.userId === params.userId &&
+            (q.priority === AnnouncementPriority.PRAYER_COMMENT ||
+              q.priority === AnnouncementPriority.ORDINARY_COMMENT),
+        );
+        if (existingUserCommentIdx !== -1) {
+          this.queue.splice(existingUserCommentIdx, 1);
+        }
+      }
+
+      // Global category pacing using admin-configured commentCooldownSec
+      const commentCooldownMs = params.isDemo
+        ? Math.min(550, Math.max(0, this.settings.commentCooldownSec) * 1000)
+        : Math.max(0, this.settings.commentCooldownSec) * 1000;
+
+      const catCooldowns: Record<AnnouncementCategory, number> = {
+        large_gift: 120,
+        gift: 200,
+        special_ritual: 1500,
+        prayer_comment: commentCooldownMs,
+        ordinary_comment: commentCooldownMs,
         background: 20000,
       };
       const prevCat = this.categoryLastEnqueued.get(params.category) || 0;
       if (now - prevCat < catCooldowns[params.category]) {
         return;
       }
-
-      if (this.queue.length >= 5 && params.priority >= AnnouncementPriority.WELCOME) {
-        return;
-      }
     }
 
     this.recentDedupeMap.set(dedupeKey, now);
     this.categoryLastEnqueued.set(params.category, now);
+    if (isComment && params.userId) {
+      this.userCommentSpokenMap.set(params.userId, now);
+    }
 
-    if (this.recentDedupeMap.size > 120) {
+    if (this.recentDedupeMap.size > 160) {
       for (const [k, ts] of this.recentDedupeMap.entries()) {
         if (now - ts > 60000) this.recentDedupeMap.delete(k);
+      }
+    }
+    if (this.userCommentSpokenMap.size > 250) {
+      for (const [k, ts] of this.userCommentSpokenMap.entries()) {
+        if (now - ts > 120000) this.userCommentSpokenMap.delete(k);
+      }
+    }
+
+    // If a gift arrives, drop any queued background idle message
+    if (isGift) {
+      this.queue = this.queue.filter((q) => q.priority !== AnnouncementPriority.BACKGROUND);
+    }
+
+    // Cap pending comment announcements so high-volume chat never overloads the voice queue
+    if (isComment) {
+      const maxPendingComments = Math.max(1, Math.min(12, this.settings.maxCommentQueueSize || 5));
+      let pendingComments = this.queue.filter(
+        (q) =>
+          q.priority === AnnouncementPriority.PRAYER_COMMENT ||
+          q.priority === AnnouncementPriority.ORDINARY_COMMENT,
+      );
+      while (pendingComments.length >= maxPendingComments) {
+        const ordinaryIdx = this.queue.findIndex(
+          (q) => q.priority === AnnouncementPriority.ORDINARY_COMMENT,
+        );
+        const dropIdx =
+          ordinaryIdx !== -1
+            ? ordinaryIdx
+            : this.queue.findIndex((q) => q.priority === AnnouncementPriority.PRAYER_COMMENT);
+        if (dropIdx !== -1) {
+          this.queue.splice(dropIdx, 1);
+        } else {
+          break;
+        }
+        pendingComments = this.queue.filter(
+          (q) =>
+            q.priority === AnnouncementPriority.PRAYER_COMMENT ||
+            q.priority === AnnouncementPriority.ORDINARY_COMMENT,
+        );
       }
     }
 
@@ -294,17 +561,43 @@ export class SmartVoiceManager {
       priority: params.priority,
       category: params.category,
       dedupeKey,
+      userId: params.userId,
+      username: params.username,
+      isDemo: params.isDemo,
       playBellBeforeSpeech: params.playBellBeforeSpeech,
       createdAt: now,
     };
 
     this.queue.push(item);
+    // Strict priority queue order:
+    // 1. LARGE_GIFT (1) > 2. NORMAL_GIFT (2) > 3. SPECIAL_RITUAL (3) > 4/5. COMMENTS (4/5) > 6. BACKGROUND (6)
     this.queue.sort((a, b) =>
       a.priority !== b.priority ? a.priority - b.priority : a.createdAt - b.createdAt,
     );
 
     if (this.queue.length > SmartVoiceManager.MAX_QUEUE_LENGTH) {
       this.queue.length = SmartVoiceManager.MAX_QUEUE_LENGTH;
+    }
+
+    // VOICE PRIORITY: GIFTS FIRST!
+    // If a gift arrives while a comment or background narration is playing and policy is 'interrupt_comments',
+    // safely abort the current comment so the gift announcement plays immediately without overlap.
+    if (
+      isGift &&
+      this.isSpeaking &&
+      this.currentItem &&
+      this.currentItem.priority >= AnnouncementPriority.PRAYER_COMMENT &&
+      this.settings.giftInterruptPolicy === 'interrupt_comments'
+    ) {
+      this.interruptedByGift = true;
+      if (this.currentAbort) {
+        this.currentAbort.abort();
+      }
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      this.notify();
+      return;
     }
 
     this.notify();
@@ -321,14 +614,32 @@ export class SmartVoiceManager {
     this.enqueue({
       text,
       priority: AnnouncementPriority.LARGE_GIFT,
-      category: 'milestone',
+      category: 'special_ritual',
       dedupeKey: `test-${Date.now()}`,
+      bypassRateLimit: true,
+    });
+  }
+
+  public previewGiftVoice(text: string, playBellBeforeSpeech = false): void {
+    if (!this.audioEnabled) {
+      this.enableAudio();
+    }
+    this.enqueue({
+      text,
+      priority: AnnouncementPriority.LARGE_GIFT,
+      category: playBellBeforeSpeech ? 'large_gift' : 'gift',
+      dedupeKey: `gift-preview-${Date.now()}`,
+      playBellBeforeSpeech,
       bypassRateLimit: true,
     });
   }
 
   public stopAndClearQueue(): void {
     this.queue = [];
+    this.interruptedByGift = false;
+    this.recentDedupeMap.clear();
+    this.categoryLastEnqueued.clear();
+    this.userCommentSpokenMap.clear();
     if (this.currentAbort) {
       this.currentAbort.abort();
       this.currentAbort = null;
@@ -337,26 +648,38 @@ export class SmartVoiceManager {
       window.speechSynthesis.cancel();
     }
     this.isSpeaking = false;
+    this.currentItem = null;
     this.currentSubtitle = '';
     soundSynthesizer.setDucking(false);
     this.notify();
   }
 
   private async processNextInQueue(): Promise<void> {
-    if (this.isSpeaking || this.queue.length === 0) return;
+    if (this.isSpeaking) return;
 
     const now = Date.now();
-    const elapsedSinceLast = now - this.lastSpokenEndedAt;
-    const waitMs = Math.max(0, this.settings.cooldownMs * 0.35 - elapsedSinceLast);
-    if (waitMs > 60) {
-      window.setTimeout(() => void this.processNextInQueue(), waitMs);
-      return;
+    this.pruneStaleQueueItems(now);
+    if (this.queue.length === 0) return;
+
+    const nextCandidate = this.queue[0];
+    const isHighPriorityGift =
+      nextCandidate.priority <= AnnouncementPriority.NORMAL_GIFT;
+
+    if (!this.interruptedByGift && !isHighPriorityGift) {
+      const elapsedSinceLast = now - this.lastSpokenEndedAt;
+      const waitMs = Math.max(0, this.settings.cooldownMs * 0.32 - elapsedSinceLast);
+      if (waitMs > 50) {
+        setTimeout(() => void this.processNextInQueue(), waitMs);
+        return;
+      }
     }
 
     const next = this.queue.shift();
     if (!next) return;
 
+    this.interruptedByGift = false;
     this.isSpeaking = true;
+    this.currentItem = next;
     this.currentSubtitle = next.text;
     const abortController = new AbortController();
     this.currentAbort = abortController;
@@ -365,13 +688,13 @@ export class SmartVoiceManager {
 
     try {
       if (this.audioEnabled) {
-        // For Large Gifts: play a gentle temple bell BEFORE the thank-you speech begins!
-        if (next.playBellBeforeSpeech) {
-          soundSynthesizer.playTempleBell(0.85);
+        // For Large Gifts / Bronze Bell: play a gentle temple bell BEFORE the thank-you speech begins
+        if (next.playBellBeforeSpeech && !abortController.signal.aborted) {
+          soundSynthesizer.playTempleBell(0.84);
           await new Promise<void>((resolve) => {
-            const bellWait = window.setTimeout(resolve, 900);
+            const bellWait = setTimeout(resolve, 820);
             abortController.signal.addEventListener('abort', () => {
-              window.clearTimeout(bellWait);
+              clearTimeout(bellWait);
               resolve();
             });
           });
@@ -383,29 +706,35 @@ export class SmartVoiceManager {
             this.settings,
             abortController.signal,
           );
-          this.lastProviderLabel = res.providerLabel;
-          if (res.latencyMs !== undefined) {
-            this.lastLatencyMs = res.latencyMs;
-          }
-          if (res.ok) {
-            this.apiStatus = 'connected';
-            this.lastWarning = '';
-          } else {
-            this.apiStatus = res.usedFallback ? 'fallback' : 'error';
-            this.lastWarning = res.errorWarning || 'Không thể kết nối dịch vụ TTS.';
+          if (!abortController.signal.aborted) {
+            this.lastProviderLabel = res.providerLabel;
+            if (res.latencyMs !== undefined) {
+              this.lastLatencyMs = res.latencyMs;
+            }
+            if (res.ok) {
+              this.apiStatus = 'connected';
+              this.lastWarning = '';
+            } else {
+              this.apiStatus = res.usedFallback ? 'fallback' : 'error';
+              this.lastWarning = res.errorWarning || 'Không thể kết nối dịch vụ TTS.';
+            }
           }
         }
       } else {
+        // Subtitle display duration when browser audio has not yet been unlocked
+        const estMs = Math.min(4500, Math.max(2200, next.text.length * 42));
         await new Promise<void>((resolve) => {
-          const t = window.setTimeout(resolve, 3200);
+          const t = setTimeout(resolve, estMs);
           abortController.signal.addEventListener('abort', () => {
-            window.clearTimeout(t);
+            clearTimeout(t);
             resolve();
           });
         });
       }
     } finally {
+      const wasPreempted = this.interruptedByGift;
       this.isSpeaking = false;
+      this.currentItem = null;
       this.currentSubtitle = '';
       this.currentAbort = null;
       this.lastSpokenEndedAt = Date.now();
@@ -413,10 +742,12 @@ export class SmartVoiceManager {
       this.notify();
 
       if (this.queue.length > 0) {
-        window.setTimeout(
-          () => void this.processNextInQueue(),
-          Math.max(250, this.settings.cooldownMs * 0.4),
-        );
+        const nextDelay = wasPreempted
+          ? 90
+          : this.queue[0]?.priority <= AnnouncementPriority.NORMAL_GIFT
+            ? 140
+            : Math.max(220, this.settings.cooldownMs * 0.35);
+        setTimeout(() => void this.processNextInQueue(), nextDelay);
       }
     }
   }

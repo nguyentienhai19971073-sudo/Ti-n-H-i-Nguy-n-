@@ -1,6 +1,6 @@
-import { TikTokNormalizedEvent } from '../types/temple';
+import { GiftMapping, TikTokNormalizedEvent, normalizeGiftId } from '../types/temple';
 
-interface SampleViewer {
+export interface SampleViewer {
   userId: string;
   username: string;
   nickname: string;
@@ -78,7 +78,7 @@ const RAW_VIETNAMESE_POOL = [
   { userId: 'demo-vn-020', username: 'quang.huy.tam', nickname: 'Quang Huy' },
 ];
 
-const VIETNAMESE_SAMPLE_POOL: SampleViewer[] = RAW_VIETNAMESE_POOL.map((v) => ({
+export const VIETNAMESE_SAMPLE_POOL: SampleViewer[] = RAW_VIETNAMESE_POOL.map((v) => ({
   ...v,
   avatarUrl: buildSacredAvatarDataUri(v.userId, v.nickname),
 }));
@@ -90,19 +90,38 @@ const SAMPLE_COMMENTS = [
   'Cầu gia đạo thuận hòa êm ấm',
   'Con cầu học hành đỗ đạt suôn sẻ',
   'Cầu tình duyên thiện lành an vui',
-  'Nam mô A Di Đà Phật, tâm tịnh lòng an',
+  'Chùa thanh tịnh quá, tâm con thấy nhẹ nhàng',
   'Nam mô Bổn Sư Thích Ca Mâu Ni Phật',
 ];
 
 let demoBatchSerial = 100;
 let prayerRotateIdx = 0;
+let ordinaryRotateIdx = 0;
 const activeBatchTimers: number[] = [];
 
 export function clearPendingDemoBatches(): void {
   while (activeBatchTimers.length > 0) {
     const t = activeBatchTimers.pop();
-    if (t !== undefined) window.clearTimeout(t);
+    if (t !== undefined && typeof window !== 'undefined') window.clearTimeout(t);
   }
+}
+
+export function resolveDemoViewerFromUsername(rawUsername: string): SampleViewer {
+  const cleaned = rawUsername.trim().replace(/^@+/, '') || PRIMARY_DEMO_VIEWER.username;
+  if (cleaned.toLowerCase() === PRIMARY_DEMO_VIEWER.username.toLowerCase()) {
+    return PRIMARY_DEMO_VIEWER;
+  }
+  const fromPool = VIETNAMESE_SAMPLE_POOL.find(
+    (v) => v.username.toLowerCase() === cleaned.toLowerCase(),
+  );
+  if (fromPool) return fromPool;
+  const userId = `demo-${cleaned.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')}`;
+  return {
+    userId,
+    username: cleaned,
+    nickname: cleaned,
+    avatarUrl: buildSacredAvatarDataUri(userId, cleaned),
+  };
 }
 
 export function createSampleFirstCommentEvent(): TikTokNormalizedEvent {
@@ -186,7 +205,7 @@ export function createSampleRoseGiftSameAccountEvent(): TikTokNormalizedEvent {
     username: PRIMARY_DEMO_VIEWER.username,
     nickname: PRIMARY_DEMO_VIEWER.nickname,
     avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
-    giftId: 5655,
+    giftId: '5655',
     giftName: 'Rose',
     giftCount: 1,
     diamondCount: 1,
@@ -205,7 +224,7 @@ export function createSampleBellGiftEvent(): TikTokNormalizedEvent {
     username: PRIMARY_DEMO_VIEWER.username,
     nickname: PRIMARY_DEMO_VIEWER.nickname,
     avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
-    giftId: 8910,
+    giftId: '8910',
     giftName: 'Bronze Bell',
     giftCount: 1,
     diamondCount: 10,
@@ -224,7 +243,7 @@ export function createSampleFruitTrayGiftEvent(): TikTokNormalizedEvent {
     username: PRIMARY_DEMO_VIEWER.username,
     nickname: PRIMARY_DEMO_VIEWER.nickname,
     avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
-    giftId: 6093,
+    giftId: '6093',
     giftName: 'Fruit Plate',
     giftCount: 1,
     diamondCount: 30,
@@ -243,7 +262,7 @@ export function createSampleLotusPedestalGiftEvent(): TikTokNormalizedEvent {
     username: PRIMARY_DEMO_VIEWER.username,
     nickname: PRIMARY_DEMO_VIEWER.nickname,
     avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
-    giftId: 5827,
+    giftId: '5827',
     giftName: 'Lotus',
     giftCount: 1,
     diamondCount: 99,
@@ -262,7 +281,7 @@ export function createSamplePagodaGiftEvent(): TikTokNormalizedEvent {
     username: PRIMARY_DEMO_VIEWER.username,
     nickname: PRIMARY_DEMO_VIEWER.nickname,
     avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
-    giftId: 29201,
+    giftId: '29201',
     giftName: 'Pagoda',
     giftCount: 1,
     diamondCount: 199,
@@ -275,23 +294,198 @@ export function createSampleLargeGiftEvent(): TikTokNormalizedEvent {
   return createSamplePagodaGiftEvent();
 }
 
-export function createSamplePrayerCommentEvent(useSameAccount = true): TikTokNormalizedEvent {
+/**
+ * Creates a Demo event for an UNCONFIGURED / UNKNOWN TikTok Gift ID so admins can test
+ * automatic logging into "QUÀ CHƯA CẤU HÌNH" and 1-click configuration.
+ */
+export function createUnknownDemoGiftEvent(params?: {
+  giftId?: string;
+  giftName?: string;
+  diamondCount?: number;
+  username?: string;
+}): TikTokNormalizedEvent {
+  const now = Date.now();
+  const gid = normalizeGiftId(params?.giftId) || '998877';
+  const viewer = resolveDemoViewerFromUsername(params?.username || PRIMARY_DEMO_VIEWER.username);
+  return {
+    eventId: `demo-unknown-gift-${gid}-${now}-${Math.random().toString(36).slice(2, 6)}`,
+    type: 'gift',
+    userId: viewer.userId,
+    username: viewer.username,
+    nickname: viewer.nickname,
+    avatarUrl: viewer.avatarUrl,
+    giftId: gid,
+    giftName: params?.giftName || `Mystery Lotus #${gid}`,
+    giftCount: 1,
+    diamondCount: params?.diamondCount ?? 25,
+    isDemo: true,
+    timestamp: now,
+  };
+}
+
+/**
+ * Simulates a realistic TikTok Gift Streak (`giftType: 1`, `repeatEnd: false` -> `repeatEnd: true`)
+ * passing through the exact same GiftRegistry + TikTokEventManager pipeline without double-counting points.
+ */
+export function scheduleSimulatedGiftStreak(
+  params: {
+    mapping: GiftMapping;
+    username: string;
+    totalCount: number;
+  },
+  dispatch: (ev: TikTokNormalizedEvent) => void,
+): void {
+  const viewer = resolveDemoViewerFromUsername(params.username);
+  const finalCount = Math.max(2, Math.min(999, Math.round(params.totalCount || 3)));
+  const streakKey = `${viewer.userId}:${params.mapping.giftId}:demo-streak-${Date.now()}`;
+
+  // Build realistic intermediate cumulative counts ending at finalCount
+  const steps: { count: number; repeatEnd: boolean }[] = [];
+  if (finalCount <= 3) {
+    for (let c = 1; c < finalCount; c++) {
+      steps.push({ count: c, repeatEnd: false });
+    }
+    steps.push({ count: finalCount, repeatEnd: true });
+  } else {
+    const step1 = 1;
+    const step2 = Math.max(2, Math.floor(finalCount * 0.5));
+    steps.push({ count: step1, repeatEnd: false });
+    if (step2 > step1 && step2 < finalCount) {
+      steps.push({ count: step2, repeatEnd: false });
+    }
+    steps.push({ count: finalCount, repeatEnd: true });
+  }
+
+  steps.forEach((step, idx) => {
+    const timer = window.setTimeout(() => {
+      const ts = Date.now();
+      dispatch({
+        eventId: `demo-streak-${streakKey}-${idx}-${ts}`,
+        type: 'gift',
+        userId: viewer.userId,
+        username: viewer.username,
+        nickname: viewer.nickname,
+        avatarUrl: viewer.avatarUrl,
+        giftId: params.mapping.giftId,
+        giftName: params.mapping.giftName,
+        giftPictureUrl: params.mapping.uploadedImageData || params.mapping.iconUrl,
+        giftCount: step.count,
+        totalStreakCount: step.count,
+        giftType: 1,
+        repeatEnd: step.repeatEnd,
+        streakKey,
+        diamondCount: params.mapping.referenceCoins || 1,
+        isDemo: true,
+        timestamp: ts,
+      });
+    }, idx * 420);
+    activeBatchTimers.push(timer);
+  });
+}
+
+/**
+ * Simulates a burst of several different configured gifts arriving quickly from multiple demo viewers
+ * to test Altar Station reservation, Ceremony Queueing, and Priority Voice Narration.
+ */
+export function scheduleSimulatedGiftBurst(
+  gifts: GiftMapping[],
+  dispatch: (ev: TikTokNormalizedEvent) => void,
+): void {
+  const enabled = gifts.filter((g) => g.enabled);
+  if (enabled.length === 0) return;
+
+  const burstCount = Math.min(5, Math.max(3, enabled.length));
+  for (let i = 0; i < burstCount; i++) {
+    const gm = enabled[i % enabled.length];
+    const viewer =
+      i === 0 ? PRIMARY_DEMO_VIEWER : VIETNAMESE_SAMPLE_POOL[i % VIETNAMESE_SAMPLE_POOL.length];
+    const timer = window.setTimeout(() => {
+      const ts = Date.now();
+      dispatch({
+        eventId: `demo-burst-${gm.giftId}-${i}-${ts}`,
+        type: 'gift',
+        userId: viewer.userId,
+        username: viewer.username,
+        nickname: viewer.nickname,
+        avatarUrl: viewer.avatarUrl,
+        giftId: gm.giftId,
+        giftName: gm.giftName,
+        giftPictureUrl: gm.uploadedImageData || gm.iconUrl,
+        giftCount: i === burstCount - 1 ? 2 : 1,
+        diamondCount: gm.referenceCoins || 1,
+        isDemo: true,
+        timestamp: ts,
+      });
+    }, i * 260);
+    activeBatchTimers.push(timer);
+  }
+}
+
+export type PrayerDemoTopic =
+  | 'binh_an'
+  | 'suc_khoe'
+  | 'tai_loc'
+  | 'tinh_duyen'
+  | 'hoc_hanh'
+  | 'gia_dao';
+
+const TOPIC_COMMENT_MAP: Record<PrayerDemoTopic, string> = {
+  binh_an: 'Con xin thành tâm cầu bình an cho cả gia đình ạ',
+  suc_khoe: 'Cầu sức khỏe dồi dào cho ông bà cha mẹ hai bên',
+  tai_loc: 'Xin cầu tài lộc may mắn và công việc thuận lợi',
+  tinh_duyen: 'Con cầu tình duyên thiện lành, êm ấm hạnh phúc',
+  hoc_hanh: 'Cầu học hành sáng suốt, thi cử đỗ đạt tốt đẹp',
+  gia_dao: 'Cầu gia đạo thuận hòa, sum vầy bình an',
+};
+
+export function createSamplePrayerTopicEvent(
+  topic: PrayerDemoTopic,
+  useSameAccount = false,
+): TikTokNormalizedEvent {
   const now = Date.now();
   const viewer = useSameAccount
     ? PRIMARY_DEMO_VIEWER
-    : VIETNAMESE_SAMPLE_POOL[Math.floor(Math.random() * VIETNAMESE_SAMPLE_POOL.length)];
-  const prayers = [
-    'Con xin cầu bình an cho cả nhà',
-    'Cầu sức khỏe cho ông bà cha mẹ',
-    'Cầu tài lộc may mắn hanh thông',
-    'Cầu tình duyên thiện lành hạnh phúc',
-    'Cầu học hành thi cử đỗ đạt',
-    'Cầu gia đạo bình an thuận hòa',
-  ];
-  const text = prayers[prayerRotateIdx % prayers.length];
+    : VIETNAMESE_SAMPLE_POOL[prayerRotateIdx % VIETNAMESE_SAMPLE_POOL.length];
   prayerRotateIdx += 1;
   return {
-    eventId: `demo-prayer-${now}`,
+    eventId: `demo-prayer-topic-${topic}-${now}-${prayerRotateIdx}`,
+    type: 'comment',
+    userId: viewer.userId,
+    username: viewer.username,
+    nickname: viewer.nickname,
+    avatarUrl: viewer.avatarUrl,
+    comment: TOPIC_COMMENT_MAP[topic],
+    isDemo: true,
+    timestamp: now,
+  };
+}
+
+export function createSamplePrayerCommentEvent(useSameAccount = true): TikTokNormalizedEvent {
+  const topics: PrayerDemoTopic[] = [
+    'binh_an',
+    'suc_khoe',
+    'tai_loc',
+    'tinh_duyen',
+    'hoc_hanh',
+    'gia_dao',
+  ];
+  const topic = topics[prayerRotateIdx % topics.length];
+  return createSamplePrayerTopicEvent(topic, useSameAccount);
+}
+
+export function createSampleOrdinaryCommentEvent(): TikTokNormalizedEvent {
+  const now = Date.now();
+  const ordinaryTexts = [
+    'Không gian chùa trang nghiêm thanh tịnh quá ạ',
+    'Tiếng chuông chùa nghe nhẹ lòng thật sự',
+    'Chúc mọi người buổi tối an nhiên tự tại',
+    'Con kính chào quý Phật tử trong chánh điện ạ',
+  ];
+  const viewer = VIETNAMESE_SAMPLE_POOL[ordinaryRotateIdx % VIETNAMESE_SAMPLE_POOL.length];
+  const text = ordinaryTexts[ordinaryRotateIdx % ordinaryTexts.length];
+  ordinaryRotateIdx += 1;
+  return {
+    eventId: `demo-ordinary-comment-${now}-${ordinaryRotateIdx}`,
     type: 'comment',
     userId: viewer.userId,
     username: viewer.username,
@@ -301,6 +495,119 @@ export function createSamplePrayerCommentEvent(useSameAccount = true): TikTokNor
     isDemo: true,
     timestamp: now,
   };
+}
+
+/**
+ * Schedules a Gift-First Voice Priority test:
+ * 1) Dispatches 2 different users' prayer comments into the voice queue
+ * 2) 550ms later dispatches a Ceremonial Gift (Đài Sen) to verify Gift voice preempts / prioritizes ahead of comments!
+ */
+export function scheduleGiftPriorityVoiceDemo(
+  dispatch: (ev: TikTokNormalizedEvent) => void,
+): void {
+  const v1 = VIETNAMESE_SAMPLE_POOL[1];
+  const v2 = VIETNAMESE_SAMPLE_POOL[2];
+  const now = Date.now();
+
+  dispatch({
+    eventId: `demo-prio-c1-${now}`,
+    type: 'comment',
+    userId: v1.userId,
+    username: v1.username,
+    nickname: v1.nickname,
+    avatarUrl: v1.avatarUrl,
+    comment: 'Con xin cầu sức khỏe cho ông bà cha mẹ ạ',
+    isDemo: true,
+    timestamp: now,
+  });
+
+  const t1 = window.setTimeout(() => {
+    const ts1 = Date.now();
+    dispatch({
+      eventId: `demo-prio-c2-${ts1}`,
+      type: 'comment',
+      userId: v2.userId,
+      username: v2.username,
+      nickname: v2.nickname,
+      avatarUrl: v2.avatarUrl,
+      comment: 'Cầu học hành sáng suốt và thi cử thuận lợi',
+      isDemo: true,
+      timestamp: ts1,
+    });
+  }, 180);
+  activeBatchTimers.push(t1);
+
+  const t2 = window.setTimeout(() => {
+    const ts2 = Date.now();
+    dispatch({
+      eventId: `demo-prio-gift-${ts2}`,
+      type: 'gift',
+      userId: PRIMARY_DEMO_VIEWER.userId,
+      username: PRIMARY_DEMO_VIEWER.username,
+      nickname: PRIMARY_DEMO_VIEWER.nickname,
+      avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
+      giftId: '5827',
+      giftName: 'Lotus',
+      giftCount: 1,
+      diamondCount: 99,
+      isDemo: true,
+      timestamp: ts2,
+    });
+  }, 620);
+  activeBatchTimers.push(t2);
+}
+
+/**
+ * Populates 8 distinct ranked users in BẢNG CÔNG ĐỨC so Ranks 1–4 fixed + Ranks 5–8 scrollable
+ * can be verified with a single click.
+ */
+export function scheduleLeaderboardRanksDemo(
+  dispatch: (ev: TikTokNormalizedEvent) => void,
+): void {
+  const giftPresets = [
+    { giftId: '29201', giftName: 'Pagoda', coins: 199 },
+    { giftId: '5827', giftName: 'Lotus', coins: 99 },
+    { giftId: '6093', giftName: 'Fruit Plate', coins: 30 },
+    { giftId: '8910', giftName: 'Bronze Bell', coins: 10 },
+    { giftId: '5655', giftName: 'Rose', coins: 1 },
+  ];
+
+  for (let i = 0; i < 8; i++) {
+    const viewer = VIETNAMESE_SAMPLE_POOL[i % VIETNAMESE_SAMPLE_POOL.length];
+    const t = window.setTimeout(() => {
+      const now = Date.now();
+      if (i < 5) {
+        const gp = giftPresets[i];
+        dispatch({
+          eventId: `demo-lb-gift-${i}-${now}`,
+          type: 'gift',
+          userId: viewer.userId,
+          username: viewer.username,
+          nickname: viewer.nickname,
+          avatarUrl: viewer.avatarUrl,
+          giftId: gp.giftId,
+          giftName: gp.giftName,
+          giftCount: 1,
+          diamondCount: gp.coins,
+          isDemo: true,
+          timestamp: now,
+        });
+      } else {
+        dispatch({
+          eventId: `demo-lb-chat-${i}-${now}`,
+          type: 'comment',
+          userId: viewer.userId,
+          username: viewer.username,
+          nickname: viewer.nickname,
+          avatarUrl: viewer.avatarUrl,
+          comment: SAMPLE_COMMENTS[i % SAMPLE_COMMENTS.length],
+          isDemo: true,
+          timestamp: now,
+        });
+      }
+    }, i * 160);
+    activeBatchTimers.push(t);
+  }
 }
 
 export function scheduleDemoParticipantsBatch(
@@ -329,8 +636,9 @@ export function scheduleDemoParticipantsBatch(
     'vy',
   ];
 
-  const demoGiftIds = [5655, 8910, 6093, 5827, 29201];
+  const demoGiftIds = ['5655', '8910', '6093', '5827', '29201'];
   const demoGiftNames = ['Rose', 'Bronze Bell', 'Fruit Plate', 'Lotus', 'Pagoda'];
+  const stepDelayMs = count >= 100 ? 45 : 180;
 
   for (let i = 0; i < count; i++) {
     const timer = window.setTimeout(() => {
@@ -361,8 +669,8 @@ export function scheduleDemoParticipantsBatch(
         timestamp: now,
       });
 
-      // Have every 6th newcomer perform a Buddhist ceremonial gift or like milestone after seating
-      if (i % 6 === 2) {
+      // Trigger occasional ceremonies only on smaller batches so 200-seat fill tests stay crisp
+      if (count <= 60 && i % 8 === 2) {
         const ritualTimer = window.setTimeout(() => {
           const t2 = Date.now();
           const gIdx = demoBatchSerial % demoGiftIds.length;
@@ -382,7 +690,7 @@ export function scheduleDemoParticipantsBatch(
           });
         }, 6800);
         activeBatchTimers.push(ritualTimer);
-      } else if (i % 6 === 4) {
+      } else if (count <= 60 && i % 8 === 5) {
         const likeTimer = window.setTimeout(() => {
           const t2 = Date.now();
           dispatch({
@@ -399,7 +707,7 @@ export function scheduleDemoParticipantsBatch(
         }, 6400);
         activeBatchTimers.push(likeTimer);
       }
-    }, i * 240);
+    }, i * stepDelayMs);
     activeBatchTimers.push(timer);
   }
 }

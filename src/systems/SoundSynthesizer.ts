@@ -1,3 +1,5 @@
+import { GiftSoundEffectType } from '../types/temple';
+
 class TempleSoundSynthesizer {
   private ctx: AudioContext | null = null;
   private unlocked = false;
@@ -341,6 +343,42 @@ class TempleSoundSynthesizer {
       osc.stop(t0 + 2.45);
     }
   }
+  /**
+   * Dynamic Gift Sound Effect Dispatcher (Data-driven from GiftMapping.soundEffect)
+   */
+  public playConfiguredGiftSound(sound: GiftSoundEffectType, volume = 0.78): void {
+    switch (sound) {
+      case 'none':
+        return;
+      case 'temple_bell':
+        this.playTempleBell(volume);
+        return;
+      case 'grand_ceremony_bell':
+        this.playGrandCeremonyBell(volume);
+        return;
+      case 'wooden_fish':
+        this.playWoodenFish(volume, 0);
+        if (typeof window !== 'undefined') {
+          window.setTimeout(() => this.playWoodenFish(volume, 1), 360);
+          window.setTimeout(() => this.playWoodenFish(volume, 2), 720);
+        }
+        return;
+      case 'incense_chime':
+        this.playIncenseChime(volume);
+        return;
+      case 'lotus_chime':
+        this.playLotusPedestalChime(volume);
+        return;
+      case 'lantern_chime':
+        this.playWaterLanternChime(volume);
+        return;
+      case 'offering_chime':
+      default:
+        this.playOfferingChime(volume);
+        return;
+    }
+  }
 }
 
 export const soundSynthesizer = new TempleSoundSynthesizer();
+
