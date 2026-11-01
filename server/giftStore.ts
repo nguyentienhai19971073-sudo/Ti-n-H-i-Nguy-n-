@@ -19,7 +19,11 @@ import {
   SOUND_EFFECT_OPTIONS,
   UnknownGiftRecord,
   VISUAL_EFFECT_OPTIONS,
+  inferCanonicalCeremonialDefaults,
+  isLegacyGiftWordTemplate,
+  normalizeCeremonialGiftMapping,
   normalizeGiftId,
+  sanitizeCeremonialText,
 } from '../src/types/temple.ts';
 
 const requireModule = createRequire(import.meta.url);
@@ -138,15 +142,21 @@ export function validateGiftMappingPayload(
     vietnameseLabel,
   );
 
-  const ceremonyTitle = sanitizeSafeText(
-    raw.ceremonyTitle ?? existingFallback?.ceremonyTitle,
-    48,
+  const ceremonyTitle = sanitizeCeremonialText(
+    sanitizeSafeText(
+      raw.ceremonyTitle ?? raw.ritualTitle ?? existingFallback?.ceremonyTitle,
+      48,
+      'CẦU BÌNH AN',
+    ),
     'CẦU BÌNH AN',
   );
 
-  const badgeCeremonyLabel = sanitizeSafeText(
-    raw.badgeCeremonyLabel ?? existingFallback?.badgeCeremonyLabel,
-    56,
+  const badgeCeremonyLabel = sanitizeCeremonialText(
+    sanitizeSafeText(
+      raw.badgeCeremonyLabel ?? existingFallback?.badgeCeremonyLabel,
+      56,
+      ceremonyTitle,
+    ),
     ceremonyTitle,
   );
 
@@ -245,11 +255,56 @@ export function validateGiftMappingPayload(
   }
   const cooldownSec = Math.round(rawCooldown * 10) / 10;
 
-  const ttsTemplate = sanitizeSafeText(
-    raw.ttsTemplate ?? raw.voiceTemplate ?? existingFallback?.ttsTemplate,
-    360,
-    DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+  const isLarge =
+    raw.isLarge !== undefined
+      ? Boolean(raw.isLarge)
+      : voicePriority === AnnouncementPriority.LARGE_GIFT ||
+        ritualType === 'altar_grand_ceremony' ||
+        ritualType === 'altar_pagoda' ||
+        points >= 500;
+
+  const ceremonialDefaults = inferCanonicalCeremonialDefaults({
+    giftId,
+    ritualType,
+    ceremonyTitle,
+    isLarge,
+  });
+
+  const ritualTitle = sanitizeCeremonialText(
+    sanitizeSafeText(
+      raw.ritualTitle ?? raw.ceremonyTitle ?? existingFallback?.ritualTitle ?? existingFallback?.ceremonyTitle,
+      48,
+      ceremonialDefaults.ritualTitle,
+    ),
+    ceremonialDefaults.ritualTitle,
   );
+
+  const rawSubtitleCandidate = sanitizeSafeText(
+    raw.ritualSubtitle ?? existingFallback?.ritualSubtitle,
+    180,
+    '',
+  );
+  const ritualSubtitle =
+    rawSubtitleCandidate && !isLegacyGiftWordTemplate(rawSubtitleCandidate)
+      ? sanitizeCeremonialText(rawSubtitleCandidate, ceremonialDefaults.ritualSubtitle)
+      : ceremonialDefaults.ritualSubtitle;
+
+  const rawVoiceCandidate = sanitizeSafeText(
+    raw.voiceTemplate ?? raw.ttsTemplate ?? existingFallback?.voiceTemplate ?? existingFallback?.ttsTemplate,
+    360,
+    '',
+  );
+  const voiceTemplate =
+    rawVoiceCandidate && !isLegacyGiftWordTemplate(rawVoiceCandidate)
+      ? sanitizeCeremonialText(rawVoiceCandidate, ceremonialDefaults.voiceTemplate)
+      : ceremonialDefaults.voiceTemplate;
+
+  const rawQueuePrio = Number(
+    raw.queuePriority ?? existingFallback?.queuePriority ?? ceremonialDefaults.queuePriority,
+  );
+  const queuePriority = Number.isFinite(rawQueuePrio)
+    ? Math.max(1, Math.min(100, Math.round(rawQueuePrio)))
+    : ceremonialDefaults.queuePriority;
 
   const enabled =
     raw.enabled !== undefined ? Boolean(raw.enabled) : (existingFallback?.enabled ?? true);
@@ -258,14 +313,6 @@ export function validateGiftMappingPayload(
     raw.showInOverlayPanel !== undefined
       ? Boolean(raw.showInOverlayPanel)
       : (existingFallback?.showInOverlayPanel ?? true);
-
-  const isLarge =
-    raw.isLarge !== undefined
-      ? Boolean(raw.isLarge)
-      : voicePriority === AnnouncementPriority.LARGE_GIFT ||
-        ritualType === 'altar_grand_ceremony' ||
-        ritualType === 'altar_pagoda' ||
-        points >= 500;
 
   const stableId = sanitizeSafeText(
     existingFallback?.id || raw.id || `gift_${giftId}`,
@@ -278,7 +325,9 @@ export function validateGiftMappingPayload(
     giftId,
     giftName,
     vietnameseLabel,
-    ceremonyTitle,
+    ceremonyTitle: ritualTitle,
+    ritualTitle,
+    ritualSubtitle,
     badgeCeremonyLabel,
     iconType,
     iconUrl,
@@ -290,8 +339,10 @@ export function validateGiftMappingPayload(
     characterAnimation,
     effect,
     soundEffect,
-    ttsTemplate,
+    ttsTemplate: voiceTemplate,
+    voiceTemplate,
     voicePriority,
+    queuePriority,
     animationDurationSec,
     cooldownSec,
     enabled,
@@ -344,7 +395,35 @@ export function validatePresetPayload(raw: Record<string, any>): GiftActionPrese
     0,
     Math.min(300, Math.round(Number(raw.cooldownSec ?? 1.5) * 10) / 10),
   );
-  const ttsTemplate = sanitizeSafeText(raw.ttsTemplate, 360, DEFAULT_GIFT_THANK_YOU_TEMPLATE);
+  const ceremonialDefaults = inferCanonicalCeremonialDefaults({
+    ritualType: rawRitual as RitualActionType,
+    ceremonyTitle: raw.ritualTitle,
+    isLarge: voicePriority === AnnouncementPriority.LARGE_GIFT,
+  });
+
+  const ritualTitle = sanitizeCeremonialText(
+    sanitizeSafeText(raw.ritualTitle, 48, ceremonialDefaults.ritualTitle),
+    ceremonialDefaults.ritualTitle,
+  );
+  const ritualSubtitle = sanitizeCeremonialText(
+    sanitizeSafeText(raw.ritualSubtitle, 180, ceremonialDefaults.ritualSubtitle),
+    ceremonialDefaults.ritualSubtitle,
+  );
+
+  const rawVoiceCandidate = sanitizeSafeText(
+    raw.voiceTemplate ?? raw.ttsTemplate,
+    360,
+    DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+  );
+  const voiceTemplate = isLegacyGiftWordTemplate(rawVoiceCandidate)
+    ? ceremonialDefaults.voiceTemplate
+    : sanitizeCeremonialText(rawVoiceCandidate, ceremonialDefaults.voiceTemplate);
+
+  const rawQPrio = Number(raw.queuePriority ?? ceremonialDefaults.queuePriority);
+  const queuePriority = Number.isFinite(rawQPrio)
+    ? Math.max(1, Math.min(100, Math.round(rawQPrio)))
+    : ceremonialDefaults.queuePriority;
+
   const presetId = sanitizeSafeText(
     raw.presetId,
     64,
@@ -355,12 +434,16 @@ export function validatePresetPayload(raw: Record<string, any>): GiftActionPrese
     presetId,
     name,
     description,
+    ritualTitle,
+    ritualSubtitle,
     ritualType: rawRitual as RitualActionType,
     characterAnimation: rawCharAnim as GiftCharacterAnimType,
     effect: rawEffect as GiftEffectType,
     soundEffect: rawSound as GiftSoundEffectType,
-    ttsTemplate,
+    ttsTemplate: voiceTemplate,
+    voiceTemplate,
     voicePriority,
+    queuePriority,
     animationDurationSec,
     cooldownSec,
     isBuiltin: Boolean(raw.isBuiltin),
@@ -502,6 +585,46 @@ export class PersistentGiftStore {
         .prepare('INSERT OR REPLACE INTO store_meta (meta_key, meta_value) VALUES (?, ?)')
         .run('seeded_presets_v1', '1');
     }
+
+    // One-time upgrade migration to pure ceremonial presentation (zero gift words)
+    const migratedV2 = this.db
+      .prepare('SELECT meta_value FROM store_meta WHERE meta_key = ?')
+      .get('migrated_ceremonial_v2');
+    if (!migratedV2) {
+      const now = Date.now();
+      const rows = this.db
+        .prepare('SELECT gift_id, sort_order, enabled, payload_json FROM gift_mappings')
+        .all();
+      const updateStmt = this.db.prepare(
+        'INSERT OR REPLACE INTO gift_mappings (gift_id, sort_order, enabled, payload_json, updated_at) VALUES (?, ?, ?, ?, ?)',
+      );
+      for (const r of rows) {
+        try {
+          const parsed = JSON.parse(String(r.payload_json)) as GiftMapping;
+          const normalized = normalizeCeremonialGiftMapping(parsed);
+          updateStmt.run(
+            normalized.giftId,
+            Number(r.sort_order ?? 0),
+            normalized.enabled ? 1 : 0,
+            JSON.stringify(normalized),
+            now,
+          );
+        } catch {
+          // Ignore malformed row
+        }
+      }
+
+      const insertPreset = this.db.prepare(
+        'INSERT OR REPLACE INTO gift_presets (preset_id, is_builtin, payload_json, updated_at) VALUES (?, ?, ?, ?)',
+      );
+      for (const preset of DEFAULT_GIFT_ACTION_PRESETS) {
+        insertPreset.run(preset.presetId, preset.isBuiltin ? 1 : 0, JSON.stringify(preset), now);
+      }
+
+      this.db
+        .prepare('INSERT OR REPLACE INTO store_meta (meta_key, meta_value) VALUES (?, ?)')
+        .run('migrated_ceremonial_v2', '1');
+    }
   }
 
   private syncMemoryFromSqlite(): void {
@@ -513,7 +636,7 @@ export class PersistentGiftStore {
     this.memoryGifts = giftRows
       .map((r) => {
         try {
-          return JSON.parse(String(r.payload_json)) as GiftMapping;
+          return normalizeCeremonialGiftMapping(JSON.parse(String(r.payload_json)) as GiftMapping);
         } catch {
           return null;
         }
@@ -552,7 +675,9 @@ export class PersistentGiftStore {
     if (fs.existsSync(this.jsonMirrorPath)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(this.jsonMirrorPath, 'utf8')) as Partial<BackupSnapshotFile>;
-        this.memoryGifts = Array.isArray(parsed.gifts) ? parsed.gifts : [...DEFAULT_GIFT_MAPPINGS];
+        this.memoryGifts = Array.isArray(parsed.gifts)
+          ? parsed.gifts.map((g) => normalizeCeremonialGiftMapping(g))
+          : [...DEFAULT_GIFT_MAPPINGS];
         this.memoryPresets = Array.isArray(parsed.presets)
           ? parsed.presets
           : [...DEFAULT_GIFT_ACTION_PRESETS];

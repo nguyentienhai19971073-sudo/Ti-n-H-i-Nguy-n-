@@ -23,6 +23,34 @@ export function clampPanelScale(scale: number | undefined): number {
   return Math.max(0.75, Math.min(1.15, Number(scale.toFixed(2))));
 }
 
+export function clampLotusDensity(density: number | undefined): number {
+  if (typeof density !== 'number' || !Number.isFinite(density)) {
+    return DEFAULT_OVERLAY_SETTINGS.lotusParticleDensity;
+  }
+  return Math.max(0.3, Math.min(2.5, Number(density.toFixed(2))));
+}
+
+export function clampPetalCount(count: number | undefined): number {
+  if (typeof count !== 'number' || !Number.isFinite(count)) {
+    return DEFAULT_OVERLAY_SETTINGS.petalCount;
+  }
+  return Math.max(8, Math.min(120, Math.round(count)));
+}
+
+export function clampLeafCount(count: number | undefined): number {
+  if (typeof count !== 'number' || !Number.isFinite(count)) {
+    return DEFAULT_OVERLAY_SETTINGS.leafCount;
+  }
+  return Math.max(2, Math.min(60, Math.round(count)));
+}
+
+export function clampCenterPanelDuration(ms: number | undefined): number {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) {
+    return DEFAULT_OVERLAY_SETTINGS.centerPanelDuration;
+  }
+  return Math.max(1200, Math.min(10000, Math.round(ms)));
+}
+
 /**
  * Builds an elegant Buddhist dark-burgundy RGBA background + thin gold border style.
  * IMPORTANT:
@@ -122,6 +150,25 @@ export function buildCommentBubbleStyle(
   };
 }
 
+export function buildCenterCeremonialPanelStyle(
+  panelOpacity = DEFAULT_OVERLAY_SETTINGS.panelOpacity,
+  isMajor = false,
+): CSSProperties {
+  const base = clampPanelOpacity(panelOpacity);
+  const topAlpha = Math.min(0.92, Number((base + 0.14).toFixed(2)));
+  const botAlpha = Math.min(0.88, Math.max(0.42, Number((base + 0.06).toFixed(2))));
+  return {
+    backgroundImage: isMajor
+      ? `linear-gradient(180deg, rgba(78, 12, 24, ${topAlpha}) 0%, rgba(36, 7, 13, ${botAlpha}) 100%)`
+      : `linear-gradient(180deg, rgba(64, 11, 21, ${topAlpha}) 0%, rgba(30, 6, 11, ${botAlpha}) 100%)`,
+    backgroundColor: `rgba(42, 8, 15, ${topAlpha})`,
+    borderColor: isMajor ? 'rgba(247, 208, 106, 0.92)' : 'rgba(218, 178, 68, 0.78)',
+    boxShadow: isMajor
+      ? '0 10px 32px rgba(0, 0, 0, 0.65), 0 0 22px rgba(245, 198, 84, 0.28)'
+      : '0 8px 24px rgba(0, 0, 0, 0.58), 0 0 14px rgba(212, 175, 55, 0.18)',
+  };
+}
+
 export function loadPersistedOverlaySettings(obsFromUrl = false): StreamOverlaySettings {
   if (typeof window === 'undefined' || !window.localStorage) {
     return {
@@ -143,6 +190,14 @@ export function loadPersistedOverlaySettings(obsFromUrl = false): StreamOverlayS
       ...parsed,
       panelScale: clampPanelScale(parsed.panelScale),
       panelOpacity: clampPanelOpacity(parsed.panelOpacity),
+      lotusParticleDensity: clampLotusDensity(parsed.lotusParticleDensity),
+      petalCount: clampPetalCount(parsed.petalCount),
+      leafCount: clampLeafCount(parsed.leafCount),
+      centerPanelDuration: clampCenterPanelDuration(parsed.centerPanelDuration),
+      showAvatarInCenterPanel:
+        parsed.showAvatarInCenterPanel !== undefined
+          ? Boolean(parsed.showAvatarInCenterPanel)
+          : DEFAULT_OVERLAY_SETTINGS.showAvatarInCenterPanel,
       obsCleanView: obsFromUrl || Boolean(parsed.obsCleanView && false),
     };
   } catch {
@@ -161,6 +216,11 @@ export function savePersistedOverlaySettings(settings: StreamOverlaySettings): v
       obsCleanView: false,
       panelScale: clampPanelScale(settings.panelScale),
       panelOpacity: clampPanelOpacity(settings.panelOpacity),
+      lotusParticleDensity: clampLotusDensity(settings.lotusParticleDensity),
+      petalCount: clampPetalCount(settings.petalCount),
+      leafCount: clampLeafCount(settings.leafCount),
+      centerPanelDuration: clampCenterPanelDuration(settings.centerPanelDuration),
+      showAvatarInCenterPanel: Boolean(settings.showAvatarInCenterPanel),
     };
     window.localStorage.setItem(OVERLAY_SETTINGS_STORAGE_KEY, JSON.stringify(toSave));
   } catch {

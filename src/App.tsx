@@ -96,6 +96,9 @@ export default function App() {
     tiktokEventManager.setMaxParticipants(overlaySettings.maxParticipants);
     tiktokEventManager.setMaxConcurrentCeremonies(overlaySettings.maxConcurrentCeremonies);
     tiktokEventManager.setEffectsEnabled(overlaySettings.effectsEnabled);
+    tiktokEventManager.setCeremonialPresentationSettings({
+      centerPanelDurationMs: overlaySettings.centerPanelDuration,
+    });
     tiktokEventManager.setInactivitySettings({
       enabled: overlaySettings.inactivityTimeoutEnabled,
       timeoutSec: overlaySettings.inactivityTimeoutSec,
@@ -242,6 +245,9 @@ export default function App() {
     tiktokEventManager.setMaxParticipants(next.maxParticipants);
     tiktokEventManager.setMaxConcurrentCeremonies(next.maxConcurrentCeremonies);
     tiktokEventManager.setEffectsEnabled(next.effectsEnabled);
+    tiktokEventManager.setCeremonialPresentationSettings({
+      centerPanelDurationMs: next.centerPanelDuration,
+    });
     tiktokEventManager.setInactivitySettings({
       enabled: next.inactivityTimeoutEnabled,
       timeoutSec: next.inactivityTimeoutSec,
@@ -311,6 +317,8 @@ export default function App() {
             giftMappings={giftMappings}
             giftEventCounts={congregation.giftEventCounts}
             activeLotusBadges={congregation.activeLotusBadges}
+            activeCenterAnnouncement={congregation.activeCenterAnnouncement}
+            activeLotusBursts={congregation.activeLotusBursts}
             prominentGiftBanner={congregation.prominentGiftBanner}
             connectionSnapshot={connectionSnapshot}
             voiceSnapshot={voiceSnapshot}
@@ -366,6 +374,8 @@ export default function App() {
             giftMappings={giftMappings}
             giftEventCounts={congregation.giftEventCounts}
             activeLotusBadges={congregation.activeLotusBadges}
+            activeCenterAnnouncement={congregation.activeCenterAnnouncement}
+            activeLotusBursts={congregation.activeLotusBursts}
             prominentGiftBanner={congregation.prominentGiftBanner}
             connectionSnapshot={connectionSnapshot}
             voiceSnapshot={voiceSnapshot}

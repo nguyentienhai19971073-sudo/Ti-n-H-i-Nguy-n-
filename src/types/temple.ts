@@ -273,24 +273,28 @@ export enum AnnouncementPriority {
 export interface GiftMapping {
   id: string; // Stable internal key (synchronized with normalized giftId for new entries)
   giftId: string; // Required unique TikTok Gift ID string (primary runtime lookup key)
-  giftName: string; // TikTok Gift Name (display/reference info)
+  giftName: string; // TikTok Gift Name (admin reference info only)
   vietnameseLabel: string; // Display Name in Vietnamese
   ceremonyTitle: string; // Short prayer intention header, e.g. "CẦU BÌNH AN"
+  ritualTitle: string; // Center ceremonial announcement title, e.g. "CẦU BÌNH AN"
+  ritualSubtitle: string; // Ceremonial subtitle template, e.g. "Phật tử {username} cầu bình an"
   badgeCeremonyLabel: string; // Floating lotus badge title, e.g. "LỄ PHẬT CẦU AN"
   iconType: GiftIconType; // Built-in vector offering icon fallback
   iconUrl?: string; // Optional external icon/image URL or emoji
   uploadedImageData?: string; // Optional uploaded image data URI (<= 250KB)
   referenceCoins: number; // Coin value (configurable reference information)
-  points: number; // Merit points awarded per completed gift
-  isLarge: boolean; // Prominent banner & major gift flag
+  points: number; // Merit points awarded per completed event
+  isLarge: boolean; // Major ceremonial event flag
   ritualType: RitualActionType; // Associated ritual action
   characterAnimation: GiftCharacterAnimType; // Associated character animation
   effect: GiftEffectType; // Visual effect
   soundEffect: GiftSoundEffectType; // Sound effect
-  ttsTemplate: string; // VieNeuTTS narration template ({username}, {giftName}, {giftCount}, {meritPoints}, {ritualName})
-  voicePriority: AnnouncementPriority; // 1 = Large Gift, 2 = Normal Gift, 3 = Special Ritual
+  ttsTemplate: string; // VieNeuTTS ceremonial narration template (kept synced with voiceTemplate)
+  voiceTemplate: string; // Ceremonial voice template (zero gift words, e.g. "Phật tử {username} cầu bình an.")
+  voicePriority: AnnouncementPriority; // 1 = Major Ceremony, 2 = Normal Ritual, 3 = Special Ritual
+  queuePriority: number; // Numeric sub-priority (1..100, higher = higher priority in center & voice queues)
   animationDurationSec: number; // Ceremony duration in seconds
-  cooldownSec: number; // Per-gift ceremony/voice cooldown in seconds
+  cooldownSec: number; // Per-ritual ceremony/voice cooldown in seconds
   enabled: boolean; // Enabled / Disabled status
   showInOverlayPanel?: boolean; // Optional toggle for compact corner reference panel
   animation?: GiftAnimType; // Legacy compatibility field
@@ -304,12 +308,16 @@ export interface GiftActionPreset {
   presetId: string;
   name: string;
   description: string;
+  ritualTitle?: string;
+  ritualSubtitle?: string;
   ritualType: RitualActionType;
   characterAnimation: GiftCharacterAnimType;
   effect: GiftEffectType;
   soundEffect: GiftSoundEffectType;
   ttsTemplate: string;
+  voiceTemplate?: string;
   voicePriority: AnnouncementPriority;
+  queuePriority?: number;
   animationDurationSec: number;
   cooldownSec: number;
   isBuiltin?: boolean;
@@ -458,6 +466,38 @@ export interface StreamOverlaySettings {
   buddhaGoldOverride: boolean;
   quality: QualityPreset;
   effectsEnabled: boolean;
+  // Ceremonial Lotus Shower & Center Announcement Panel Settings
+  lotusParticleDensity: number; // Multiplier 0.3..2.5 (default 1.15)
+  petalCount: number; // Falling lotus petals per ceremony (8..120, default 44)
+  leafCount: number; // Falling lotus leaves per ceremony (2..60, default 16)
+  centerPanelDuration: number; // Center announcement duration in ms (1200..10000, default 3400)
+  showAvatarInCenterPanel: boolean; // Show circular TikTok avatar ONLY inside CenterCeremonialPanel
+}
+
+export interface CeremonialAnnouncementItem {
+  id: string;
+  userId: string;
+  username: string;
+  nickname: string;
+  avatarUrl?: string;
+  ritualTitle: string;
+  ritualSubtitle: string;
+  isMajor: boolean;
+  tier: AnnouncementPriority;
+  queuePriority: number;
+  durationMs: number;
+  startedAt: number;
+  expiresAt: number;
+  createdAt: number;
+  isDemo: boolean;
+}
+
+export interface LotusBurstTrigger {
+  id: string;
+  isMajor: boolean;
+  intensity: number;
+  startedAt: number;
+  durationMs: number;
 }
 
 export interface FeedNotification {
@@ -587,9 +627,9 @@ export const VOICE_PRIORITY_OPTIONS: {
   value: AnnouncementPriority;
   labelVi: string;
 }[] = [
-  { value: AnnouncementPriority.LARGE_GIFT, labelVi: 'Ưu tiên 1 — Quà lớn / Đại lễ (Cao nhất)' },
-  { value: AnnouncementPriority.NORMAL_GIFT, labelVi: 'Ưu tiên 2 — Quà tặng thường' },
-  { value: AnnouncementPriority.SPECIAL_RITUAL, labelVi: 'Ưu tiên 3 — Nghi lễ đặc biệt' },
+  { value: AnnouncementPriority.LARGE_GIFT, labelVi: 'Ưu tiên 1 — Đại lễ trang nghiêm (Cao nhất)' },
+  { value: AnnouncementPriority.NORMAL_GIFT, labelVi: 'Ưu tiên 2 — Nghi lễ cầu an thường' },
+  { value: AnnouncementPriority.SPECIAL_RITUAL, labelVi: 'Ưu tiên 3 — Nghi lễ tâm thành' },
 ];
 
 export function getRitualDisplayNameVi(ritualType: RitualActionType): string {
@@ -601,35 +641,235 @@ export function getRitualDisplayNameVi(ritualType: RitualActionType): string {
   return found ? found.shortVi : 'Lễ Phật';
 }
 
+const FORBIDDEN_GIFT_WORDS_PATTERN =
+  /(?:^|[^\p{L}\p{N}])(tặng\s+quà|đã\s+gửi\s+quà|gửi\s+quà|quà\s+tặng|quà|sent\s+a\s+gift|gifts?)(?=$|[^\p{L}\p{N}])/iu;
+
+const LEGACY_GIFT_TEMPLATE_PATTERN =
+  /(đã\s+gửi\s+\{giftName\}|đã\s+dâng\s+\{giftName\}|cúng\s+dường\s+\{giftName\})/iu;
+
 /**
- * Interpolates all supported VieNeuTTS template variables safely:
- * {username}, {giftName}, {giftCount}, {meritPoints}, {ritualName}
+ * Checks whether a string contains any forbidden gift words ("tặng quà", "quà", "gift", "đã gửi quà", "sent a gift")
+ * using Unicode syllable boundaries so legitimate Buddhist words like "Mâm Quả" or "nhân quả" remain untouched.
+ */
+export function containsForbiddenGiftWords(raw: string | undefined | null): boolean {
+  if (!raw) return false;
+  return FORBIDDEN_GIFT_WORDS_PATTERN.test(String(raw).normalize('NFC'));
+}
+
+export function isLegacyGiftWordTemplate(raw: string | undefined | null): boolean {
+  if (!raw) return false;
+  const nfc = String(raw).normalize('NFC');
+  return FORBIDDEN_GIFT_WORDS_PATTERN.test(nfc) || LEGACY_GIFT_TEMPLATE_PATTERN.test(nfc);
+}
+
+/**
+ * Strips any forbidden gift wording from ceremonial announcements, subtitles, and voice narration
+ * so CHÙA ONLINE strictly speaks and displays sacred prayer intentions.
+ */
+export function sanitizeCeremonialText(
+  raw: string | undefined | null,
+  fallback = 'Cầu bình an',
+): string {
+  if (!raw) return fallback;
+  const cleaned = String(raw)
+    .normalize('NFC')
+    .replace(
+      /(^|[^\p{L}\p{N}])(đã\s+gửi\s+quà\s+tặng|đã\s+gửi\s+quà|gửi\s+quà\s+tặng|gửi\s+quà|tặng\s+quà|quà\s+tặng|sent\s+a\s+gift|gifts?|quà)(?=$|[^\p{L}\p{N}])/giu,
+      '$1thành tâm hành lễ',
+    )
+    .replace(/(thành tâm hành lễ\s*){2,}/giu, 'thành tâm hành lễ ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || fallback;
+}
+
+export interface CanonicalCeremonialDefaults {
+  ritualTitle: string;
+  ritualSubtitle: string;
+  voiceTemplate: string;
+  queuePriority: number;
+}
+
+/**
+ * Resolves exact canonical Buddhist ceremonial title, subtitle, voice template & queuePriority
+ * for any mapped TikTok ritual event without ever mentioning gifts.
+ */
+export function inferCanonicalCeremonialDefaults(params: {
+  giftId?: string;
+  ritualType?: RitualActionType;
+  ceremonyTitle?: string;
+  isLarge?: boolean;
+}): CanonicalCeremonialDefaults {
+  const gid = normalizeGiftId(params.giftId);
+  const titleUpper = (params.ceremonyTitle || '').normalize('NFC').toUpperCase();
+
+  if (gid === '5655' || titleUpper.includes('BÌNH AN') || params.ritualType === 'altar_flower') {
+    return {
+      ritualTitle: 'CẦU BÌNH AN',
+      ritualSubtitle: 'Phật tử {username} cầu bình an',
+      voiceTemplate: 'Phật tử {username} cầu bình an.',
+      queuePriority: 40,
+    };
+  }
+  if (gid === '8910' || titleUpper.includes('SỨC KHỎE') || params.ritualType === 'altar_bell') {
+    return {
+      ritualTitle: 'CẦU SỨC KHỎE',
+      ritualSubtitle: 'Phật tử {username} cầu sức khỏe',
+      voiceTemplate: 'Phật tử {username} cầu sức khỏe.',
+      queuePriority: 50,
+    };
+  }
+  if (gid === '6093' || titleUpper.includes('GIA ĐẠO') || params.ritualType === 'altar_fruit_tray') {
+    return {
+      ritualTitle: 'CẦU GIA ĐẠO',
+      ritualSubtitle: 'Phật tử {username} cầu gia đạo',
+      voiceTemplate: 'Phật tử {username} cầu gia đạo.',
+      queuePriority: 60,
+    };
+  }
+  if (
+    gid === '5827' ||
+    titleUpper.includes('TÀI LỘC') ||
+    params.ritualType === 'altar_lotus_pedestal'
+  ) {
+    return {
+      ritualTitle: 'CẦU TÀI LỘC',
+      ritualSubtitle: 'Phật tử {username} cầu tài lộc',
+      voiceTemplate: 'Phật tử {username} cầu tài lộc. Kính chúc gia đình luôn an lành.',
+      queuePriority: 90,
+    };
+  }
+  if (
+    gid === '29201' ||
+    titleUpper.includes('CÔNG ĐỨC') ||
+    params.ritualType === 'altar_grand_ceremony' ||
+    params.ritualType === 'altar_pagoda'
+  ) {
+    return {
+      ritualTitle: 'CẦU CÔNG ĐỨC',
+      ritualSubtitle: 'Phật tử {username} cầu công đức',
+      voiceTemplate: 'Phật tử {username} cầu công đức. Kính chúc gia đình luôn an lành.',
+      queuePriority: 100,
+    };
+  }
+
+  const cleanHeader = sanitizeCeremonialText(
+    params.ceremonyTitle?.trim() || 'CẦU BÌNH AN',
+    'CẦU BÌNH AN',
+  ).toUpperCase();
+  const lowerIntention = cleanHeader.startsWith('CẦU ')
+    ? cleanHeader.toLowerCase()
+    : `cầu ${cleanHeader.toLowerCase()}`;
+
+  return {
+    ritualTitle: cleanHeader,
+    ritualSubtitle: `Phật tử {username} ${lowerIntention}`,
+    voiceTemplate: params.isLarge
+      ? `Phật tử {username} ${lowerIntention}. Kính chúc gia đình luôn an lành.`
+      : `Phật tử {username} ${lowerIntention}.`,
+    queuePriority: params.isLarge ? 85 : 45,
+  };
+}
+
+/**
+ * Ensures any persisted or imported GiftMapping carries clean ceremonial `ritualTitle`,
+ * `ritualSubtitle`, `voiceTemplate`, `ttsTemplate`, and `queuePriority` with zero gift words.
+ */
+export function normalizeCeremonialGiftMapping(raw: GiftMapping): GiftMapping {
+  const defaults = inferCanonicalCeremonialDefaults({
+    giftId: raw.giftId,
+    ritualType: raw.ritualType,
+    ceremonyTitle: raw.ceremonyTitle || raw.ritualTitle,
+    isLarge: raw.isLarge,
+  });
+
+  const ritualTitle = sanitizeCeremonialText(
+    raw.ritualTitle?.trim() || raw.ceremonyTitle?.trim() || defaults.ritualTitle,
+    defaults.ritualTitle,
+  );
+  const ceremonyTitle = sanitizeCeremonialText(
+    raw.ceremonyTitle?.trim() || ritualTitle,
+    ritualTitle,
+  );
+  const rawSub = raw.ritualSubtitle?.trim();
+  const ritualSubtitle =
+    rawSub && !isLegacyGiftWordTemplate(rawSub)
+      ? sanitizeCeremonialText(rawSub, defaults.ritualSubtitle)
+      : defaults.ritualSubtitle;
+
+  const candidateVoice = raw.voiceTemplate?.trim() || raw.ttsTemplate?.trim() || '';
+  const voiceTemplate =
+    candidateVoice && !isLegacyGiftWordTemplate(candidateVoice)
+      ? sanitizeCeremonialText(candidateVoice, defaults.voiceTemplate)
+      : defaults.voiceTemplate;
+
+  const rawQPrio = Number(raw.queuePriority);
+  const queuePriority = Number.isFinite(rawQPrio)
+    ? Math.max(1, Math.min(100, Math.round(rawQPrio)))
+    : defaults.queuePriority;
+
+  return {
+    ...raw,
+    giftId: normalizeGiftId(raw.giftId),
+    ceremonyTitle,
+    ritualTitle,
+    ritualSubtitle,
+    voiceTemplate,
+    ttsTemplate: voiceTemplate,
+    queuePriority,
+  };
+}
+
+export function renderCeremonialSubtitle(
+  template: string | undefined,
+  vars: {
+    username: string;
+    ritualTitle?: string;
+    meritPoints?: number;
+  },
+): string {
+  const raw = template?.trim() || 'Phật tử {username} cầu bình an';
+  const interpolated = raw
+    .replace(/\{username\}/gi, () => vars.username)
+    .replace(/\{ritualTitle\}/gi, () => vars.ritualTitle || 'CẦU BÌNH AN')
+    .replace(/\{meritPoints\}/gi, () => String(vars.meritPoints ?? 0))
+    .replace(/\s+/g, ' ')
+    .trim();
+  return sanitizeCeremonialText(interpolated, `Phật tử ${vars.username} cầu bình an`);
+}
+
+/**
+ * Interpolates all supported VieNeuTTS ceremonial template variables safely
+ * and strips any forbidden gift words so voice narration is 100% devotional.
  */
 export function renderGiftVoiceTemplate(
   template: string,
   vars: {
     username: string;
-    giftName: string;
-    giftCount: number;
-    meritPoints: number;
-    ritualName: string;
+    giftName?: string;
+    giftCount?: number;
+    meritPoints?: number;
+    ritualName?: string;
+    ritualTitle?: string;
   },
 ): string {
   const raw =
-    template?.trim() ||
-    'Xin cảm ơn Phật tử {username} đã gửi {giftName} và thực hiện nghi lễ {ritualName}. Kính chúc bạn luôn bình an.';
-  return raw
-    .replace(/\{username\}/g, vars.username)
-    .replace(/\{giftName\}/g, vars.giftName)
-    .replace(/\{giftCount\}/g, String(vars.giftCount))
-    .replace(/\{meritPoints\}/g, String(vars.meritPoints))
-    .replace(/\{ritualName\}/g, vars.ritualName)
+    template && !isLegacyGiftWordTemplate(template)
+      ? template.trim()
+      : 'Phật tử {username} cầu bình an.';
+  const rendered = raw
+    .replace(/\{username\}/gi, () => vars.username)
+    .replace(/\{ritualTitle\}/gi, () => vars.ritualTitle || 'cầu bình an')
+    .replace(/\{ritualName\}/gi, () => vars.ritualName || 'lễ Phật cầu an')
+    .replace(/\{giftName\}/gi, () => vars.ritualName || vars.giftName || 'lễ Phật')
+    .replace(/\{giftCount\}/gi, () => String(vars.giftCount ?? 1))
+    .replace(/\{meritPoints\}/gi, () => String(vars.meritPoints ?? 0))
     .replace(/\s+/g, ' ')
     .trim();
+  return sanitizeCeremonialText(rendered, `Phật tử ${vars.username} cầu bình an.`);
 }
 
-export const DEFAULT_GIFT_THANK_YOU_TEMPLATE =
-  'Xin cảm ơn Phật tử {username} đã gửi {giftName} và thực hiện nghi lễ {ritualName}. Kính chúc bạn luôn bình an.';
+export const DEFAULT_GIFT_THANK_YOU_TEMPLATE = 'Phật tử {username} cầu bình an.';
 
 export const DEFAULT_WELCOME_TEMPLATE =
   'Chào mừng Phật tử {username} đã đến với Chùa Online. Kính chúc bạn luôn bình an.';
@@ -648,6 +888,7 @@ export const DEFAULT_COMMENT_VOICE_TEMPLATES: CommentVoiceTemplates = {
 };
 
 // Editable reference configuration for "🪷 CÚNG DƯỜNG CẦU AN" + normalized TikTok giftId string mapping
+// Strictly uses devotional prayer intentions (ZERO gift words!)
 export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
   {
     id: 'hoa_hong',
@@ -655,6 +896,8 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     giftName: 'Rose',
     vietnameseLabel: 'Hoa Hồng',
     ceremonyTitle: 'CẦU BÌNH AN',
+    ritualTitle: 'CẦU BÌNH AN',
+    ritualSubtitle: 'Phật tử {username} cầu bình an',
     badgeCeremonyLabel: 'LỄ PHẬT CẦU AN',
     iconType: 'rose',
     referenceCoins: 1,
@@ -664,9 +907,10 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     characterAnimation: 'walk_offer_bow',
     effect: 'lotus_petals',
     soundEffect: 'offering_chime',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName} và thực hiện nghi lễ {ritualName}. Kính chúc bạn luôn bình an.',
+    ttsTemplate: 'Phật tử {username} cầu bình an.',
+    voiceTemplate: 'Phật tử {username} cầu bình an.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 40,
     animationDurationSec: 4.3,
     cooldownSec: 1.2,
     enabled: true,
@@ -679,6 +923,8 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     giftName: 'Bronze Bell',
     vietnameseLabel: 'Chuông Đồng',
     ceremonyTitle: 'CẦU SỨC KHỎE',
+    ritualTitle: 'CẦU SỨC KHỎE',
+    ritualSubtitle: 'Phật tử {username} cầu sức khỏe',
     badgeCeremonyLabel: 'THỈNH CHUÔNG CẦU SỨC KHỎE',
     iconType: 'bell',
     referenceCoins: 10,
@@ -688,9 +934,10 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     characterAnimation: 'walk_ring_bell',
     effect: 'bell_waves',
     soundEffect: 'temple_bell',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName} ({giftCount} lễ), thực hiện nghi lễ {ritualName} cầu sức khỏe dồi dào.',
+    ttsTemplate: 'Phật tử {username} cầu sức khỏe.',
+    voiceTemplate: 'Phật tử {username} cầu sức khỏe.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 50,
     animationDurationSec: 4.6,
     cooldownSec: 1.5,
     enabled: true,
@@ -703,6 +950,8 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     giftName: 'Fruit Plate',
     vietnameseLabel: 'Mâm Quả',
     ceremonyTitle: 'CẦU GIA ĐẠO',
+    ritualTitle: 'CẦU GIA ĐẠO',
+    ritualSubtitle: 'Phật tử {username} cầu gia đạo',
     badgeCeremonyLabel: 'DÂNG QUẢ CẦU GIA ĐẠO',
     iconType: 'fruit',
     referenceCoins: 30,
@@ -712,9 +961,10 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     characterAnimation: 'walk_offer_bow',
     effect: 'golden_particles',
     soundEffect: 'offering_chime',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã dâng {giftName}, cộng {meritPoints} điểm công đức cầu gia đạo thuận hòa bình an.',
+    ttsTemplate: 'Phật tử {username} cầu gia đạo.',
+    voiceTemplate: 'Phật tử {username} cầu gia đạo.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 60,
     animationDurationSec: 4.6,
     cooldownSec: 1.5,
     enabled: true,
@@ -727,6 +977,8 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     giftName: 'Lotus',
     vietnameseLabel: 'Đài Sen',
     ceremonyTitle: 'CẦU TÀI LỘC',
+    ritualTitle: 'CẦU TÀI LỘC',
+    ritualSubtitle: 'Phật tử {username} cầu tài lộc',
     badgeCeremonyLabel: 'DÂNG ĐÀI SEN CẦU TÀI LỘC',
     iconType: 'lotus',
     referenceCoins: 99,
@@ -736,9 +988,10 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     characterAnimation: 'walk_offer_bow',
     effect: 'glowing_lotus',
     soundEffect: 'lotus_chime',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName} và thực hiện nghi lễ {ritualName}, nhận {meritPoints} công đức cầu tài lộc hanh thông.',
+    ttsTemplate: 'Phật tử {username} cầu tài lộc. Kính chúc gia đình luôn an lành.',
+    voiceTemplate: 'Phật tử {username} cầu tài lộc. Kính chúc gia đình luôn an lành.',
     voicePriority: AnnouncementPriority.LARGE_GIFT,
+    queuePriority: 90,
     animationDurationSec: 5.0,
     cooldownSec: 1.5,
     enabled: true,
@@ -751,6 +1004,8 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     giftName: 'Pagoda',
     vietnameseLabel: 'Bảo Tháp',
     ceremonyTitle: 'CẦU CÔNG ĐỨC',
+    ritualTitle: 'CẦU CÔNG ĐỨC',
+    ritualSubtitle: 'Phật tử {username} cầu công đức',
     badgeCeremonyLabel: 'NGHI LỄ BẢO THÁP CÔNG ĐỨC',
     iconType: 'pagoda',
     referenceCoins: 199,
@@ -760,9 +1015,10 @@ export const DEFAULT_GIFT_MAPPINGS: GiftMapping[] = [
     characterAnimation: 'walk_prostrate_3',
     effect: 'grand_ceremony',
     soundEffect: 'grand_ceremony_bell',
-    ttsTemplate:
-      'Nam mô A Di Đà Phật. Xin cảm ơn Phật tử {username} đã dâng {giftName} thực hiện {ritualName}, viên mãn {meritPoints} điểm công đức.',
+    ttsTemplate: 'Phật tử {username} cầu công đức. Kính chúc gia đình luôn an lành.',
+    voiceTemplate: 'Phật tử {username} cầu công đức. Kính chúc gia đình luôn an lành.',
     voicePriority: AnnouncementPriority.LARGE_GIFT,
+    queuePriority: 100,
     animationDurationSec: 5.8,
     cooldownSec: 2.0,
     enabled: true,
@@ -775,14 +1031,17 @@ export const DEFAULT_GIFT_ACTION_PRESETS: GiftActionPreset[] = [
   {
     presetId: 'preset_flower_peace',
     name: 'Dâng Hoa Cầu Bình An',
-    description: 'Đi lên bàn thờ dâng hoa, cánh sen bay nhẹ & chuông tịnh tâm',
+    description: 'Đi lên bàn thờ dâng hoa, hoa sen rơi trang nghiêm & chuông tịnh tâm',
+    ritualTitle: 'CẦU BÌNH AN',
+    ritualSubtitle: 'Phật tử {username} cầu bình an',
     ritualType: 'altar_flower',
     characterAnimation: 'walk_offer_bow',
     effect: 'lotus_petals',
     soundEffect: 'offering_chime',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName} và thực hiện nghi lễ {ritualName}. Kính chúc bạn luôn bình an.',
+    ttsTemplate: 'Phật tử {username} cầu bình an.',
+    voiceTemplate: 'Phật tử {username} cầu bình an.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 40,
     animationDurationSec: 4.3,
     cooldownSec: 1.2,
     isBuiltin: true,
@@ -792,13 +1051,16 @@ export const DEFAULT_GIFT_ACTION_PRESETS: GiftActionPreset[] = [
     presetId: 'preset_incense_devotion',
     name: 'Thắp Hương Tâm Thành',
     description: 'Đi lên dâng 3 nén tâm hương, khói trầm linh thiêng & chuông gia trì',
+    ritualTitle: 'CẦU BÌNH AN',
+    ritualSubtitle: 'Phật tử {username} cầu bình an',
     ritualType: 'altar_incense',
     characterAnimation: 'walk_offer_bow',
     effect: 'incense_smoke',
     soundEffect: 'incense_chime',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName}, thành tâm {ritualName} cầu bình an.',
+    ttsTemplate: 'Phật tử {username} cầu bình an.',
+    voiceTemplate: 'Phật tử {username} cầu bình an.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 45,
     animationDurationSec: 4.2,
     cooldownSec: 1.5,
     isBuiltin: true,
@@ -808,13 +1070,16 @@ export const DEFAULT_GIFT_ACTION_PRESETS: GiftActionPreset[] = [
     presetId: 'preset_bell_health',
     name: 'Thỉnh Đại Hồng Chung',
     description: 'Đi lên tháp chuông thỉnh chuông đồng ngân vang cầu sức khỏe',
+    ritualTitle: 'CẦU SỨC KHỎE',
+    ritualSubtitle: 'Phật tử {username} cầu sức khỏe',
     ritualType: 'altar_bell',
     characterAnimation: 'walk_ring_bell',
     effect: 'bell_waves',
     soundEffect: 'temple_bell',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName} và {ritualName} cầu sức khỏe an khang.',
+    ttsTemplate: 'Phật tử {username} cầu sức khỏe.',
+    voiceTemplate: 'Phật tử {username} cầu sức khỏe.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 50,
     animationDurationSec: 4.6,
     cooldownSec: 1.5,
     isBuiltin: true,
@@ -824,13 +1089,16 @@ export const DEFAULT_GIFT_ACTION_PRESETS: GiftActionPreset[] = [
     presetId: 'preset_wooden_fish',
     name: 'Gõ Mõ Tụng Kinh',
     description: 'Đi lên trước Phật đài quỳ gõ mõ cổ truyền & kim sa vàng',
+    ritualTitle: 'CẦU BÌNH AN',
+    ritualSubtitle: 'Phật tử {username} cầu bình an',
     ritualType: 'altar_wooden_fish',
     characterAnimation: 'walk_wooden_fish',
     effect: 'golden_particles',
     soundEffect: 'wooden_fish',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName}, thành tâm gõ mõ cầu an (+{meritPoints} công đức).',
+    ttsTemplate: 'Phật tử {username} cầu bình an.',
+    voiceTemplate: 'Phật tử {username} cầu bình an.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 55,
     animationDurationSec: 4.4,
     cooldownSec: 1.5,
     isBuiltin: true,
@@ -839,14 +1107,17 @@ export const DEFAULT_GIFT_ACTION_PRESETS: GiftActionPreset[] = [
   {
     presetId: 'preset_grand_ceremony',
     name: 'Đại Lễ Hoàng Kim Tam Bảo',
-    description: 'Đại lễ Tam Bái 3 lạy, cột sáng hào quang vàng & đại hồng chung ưu tiên #1',
+    description: 'Đại lễ Tam Bái 3 lạy, mưa hoa sen rực rỡ & đại hồng chung ưu tiên #1',
+    ritualTitle: 'CẦU CÔNG ĐỨC',
+    ritualSubtitle: 'Phật tử {username} cầu công đức',
     ritualType: 'altar_grand_ceremony',
     characterAnimation: 'walk_prostrate_3',
     effect: 'grand_ceremony',
     soundEffect: 'grand_ceremony_bell',
-    ttsTemplate:
-      'Nam mô A Di Đà Phật. Xin cảm ơn Phật tử {username} đã dâng {giftName} ({giftCount} lễ), viên mãn {meritPoints} công đức trong {ritualName}.',
+    ttsTemplate: 'Phật tử {username} cầu công đức. Kính chúc gia đình luôn an lành.',
+    voiceTemplate: 'Phật tử {username} cầu công đức. Kính chúc gia đình luôn an lành.',
     voicePriority: AnnouncementPriority.LARGE_GIFT,
+    queuePriority: 100,
     animationDurationSec: 5.8,
     cooldownSec: 2.0,
     isBuiltin: true,
@@ -856,13 +1127,16 @@ export const DEFAULT_GIFT_ACTION_PRESETS: GiftActionPreset[] = [
     presetId: 'preset_seated_light',
     name: 'Ánh Sáng Vàng Tại Đệm Ngồi',
     description: 'Chắp tay tại đệm ngồi cùng cột ánh sáng vàng chiếu rọi (không rời chỗ)',
+    ritualTitle: 'CẦU BÌNH AN',
+    ritualSubtitle: 'Phật tử {username} cầu bình an',
     ritualType: 'golden_light',
     characterAnimation: 'seated_pray',
     effect: 'golden_light',
     soundEffect: 'lotus_chime',
-    ttsTemplate:
-      'Xin cảm ơn Phật tử {username} đã gửi {giftName}, đón nhận ánh sáng từ bi và {meritPoints} công đức.',
+    ttsTemplate: 'Phật tử {username} cầu bình an.',
+    voiceTemplate: 'Phật tử {username} cầu bình an.',
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 42,
     animationDurationSec: 3.6,
     cooldownSec: 1.0,
     isBuiltin: true,
@@ -1037,6 +1311,11 @@ export const DEFAULT_OVERLAY_SETTINGS: StreamOverlaySettings = {
   buddhaGoldOverride: true,
   quality: 'medium',
   effectsEnabled: true,
+  lotusParticleDensity: 1.15,
+  petalCount: 44,
+  leafCount: 16,
+  centerPanelDuration: 3400,
+  showAvatarInCenterPanel: true,
 };
 
 declare global {

@@ -7,6 +7,7 @@ import {
   VieNeuVoiceOption,
   VoiceApiConnectionState,
   VoiceSettings,
+  sanitizeCeremonialText,
 } from '../types/temple';
 import { soundSynthesizer } from './SoundSynthesizer';
 import { TTSConnectionTestOutcome, TTSProviderManager } from './TTSProviderManager';
@@ -23,6 +24,7 @@ export interface QueuedAnnouncement {
   id: string;
   text: string;
   priority: AnnouncementPriority;
+  queuePriority?: number;
   category: AnnouncementCategory;
   dedupeKey: string;
   userId?: string;
@@ -431,6 +433,7 @@ export class SmartVoiceManager {
   public enqueue(params: {
     text: string;
     priority: AnnouncementPriority;
+    queuePriority?: number;
     category: AnnouncementCategory;
     dedupeKey?: string;
     userId?: string;
@@ -441,7 +444,16 @@ export class SmartVoiceManager {
   }): void {
     if (!this.settings.autoNarrationEnabled && !params.bypassRateLimit) return;
 
-    const cleanText = params.text.normalize('NFC').replace(/\s+/g, ' ').trim();
+    const rawTrimmed = params.text.normalize('NFC').replace(/\s+/g, ' ').trim();
+    if (!rawTrimmed) return;
+
+    const isCeremonialCategory =
+      params.category === 'large_gift' ||
+      params.category === 'gift' ||
+      params.category === 'special_ritual';
+    const cleanText = isCeremonialCategory
+      ? sanitizeCeremonialText(rawTrimmed, rawTrimmed)
+      : rawTrimmed;
     if (!cleanText) return;
 
     const now = Date.now();
@@ -491,8 +503,8 @@ export class SmartVoiceManager {
         : Math.max(0, this.settings.commentCooldownSec) * 1000;
 
       const catCooldowns: Record<AnnouncementCategory, number> = {
-        large_gift: 120,
-        gift: 200,
+        large_gift: 0,
+        gift: 0,
         special_ritual: 1500,
         prayer_comment: commentCooldownMs,
         ordinary_comment: commentCooldownMs,
@@ -555,10 +567,20 @@ export class SmartVoiceManager {
       }
     }
 
+    const defaultQueuePrio =
+      params.priority === AnnouncementPriority.LARGE_GIFT
+        ? 90
+        : params.priority === AnnouncementPriority.NORMAL_GIFT
+          ? 50
+          : params.priority === AnnouncementPriority.SPECIAL_RITUAL
+            ? 30
+            : 10;
+
     const item: QueuedAnnouncement = {
       id: `tts-${now}-${Math.random().toString(36).slice(2, 6)}`,
       text: cleanText,
       priority: params.priority,
+      queuePriority: params.queuePriority ?? defaultQueuePrio,
       category: params.category,
       dedupeKey,
       userId: params.userId,
@@ -571,17 +593,20 @@ export class SmartVoiceManager {
     this.queue.push(item);
     // Strict priority queue order:
     // 1. LARGE_GIFT (1) > 2. NORMAL_GIFT (2) > 3. SPECIAL_RITUAL (3) > 4/5. COMMENTS (4/5) > 6. BACKGROUND (6)
-    this.queue.sort((a, b) =>
-      a.priority !== b.priority ? a.priority - b.priority : a.createdAt - b.createdAt,
-    );
+    // Within the same tier, higher numeric queuePriority speaks first, then FIFO by createdAt!
+    this.queue.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      const qpDiff = (b.queuePriority ?? 0) - (a.queuePriority ?? 0);
+      if (qpDiff !== 0) return qpDiff;
+      return a.createdAt - b.createdAt;
+    });
 
     if (this.queue.length > SmartVoiceManager.MAX_QUEUE_LENGTH) {
       this.queue.length = SmartVoiceManager.MAX_QUEUE_LENGTH;
     }
 
-    // VOICE PRIORITY: GIFTS FIRST!
-    // If a gift arrives while a comment or background narration is playing and policy is 'interrupt_comments',
-    // safely abort the current comment so the gift announcement plays immediately without overlap.
+    // VOICE PRIORITY: CEREMONIAL EVENTS FIRST — COMMENTS NEVER INTERRUPT CEREMONIES!
+    // Only ceremonial items (isGift) can preempt an ongoing comment/background narration.
     if (
       isGift &&
       this.isSpeaking &&

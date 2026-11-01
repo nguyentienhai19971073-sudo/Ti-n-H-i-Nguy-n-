@@ -17,6 +17,7 @@ import {
   MeritLedgerEntry,
   TikTokNormalizedEvent,
   getRitualDisplayNameVi,
+  renderCeremonialSubtitle,
   renderGiftVoiceTemplate,
 } from '../../types/temple';
 import {
@@ -69,13 +70,22 @@ export function GiftSimulatorPanel({
   const safeQty = Math.max(1, Math.min(999, Math.round(quantity || 1)));
   const expectedAwardedPoints = activeGift ? activeGift.points * safeQty : 0;
 
+  const previewSubtitle = activeGift
+    ? renderCeremonialSubtitle(activeGift.ritualSubtitle, {
+        username: resolvedViewer.username,
+        ritualTitle: activeGift.ritualTitle || activeGift.ceremonyTitle,
+        meritPoints: expectedAwardedPoints,
+      })
+    : '';
+
   const previewSpeech = activeGift
-    ? renderGiftVoiceTemplate(activeGift.ttsTemplate, {
+    ? renderGiftVoiceTemplate(activeGift.voiceTemplate || activeGift.ttsTemplate, {
         username: resolvedViewer.nickname || resolvedViewer.username,
         giftName: activeGift.vietnameseLabel || activeGift.giftName,
         giftCount: safeQty,
         meritPoints: expectedAwardedPoints,
         ritualName: getRitualDisplayNameVi(activeGift.ritualType),
+        ritualTitle: activeGift.ritualTitle || activeGift.ceremonyTitle,
       })
     : '';
 
@@ -213,7 +223,7 @@ export function GiftSimulatorPanel({
         </div>
       </div>
 
-      {/* Live Merit Point Calculation & Voice Preview Card */}
+      {/* Live Merit Point Calculation & Ceremonial Preview Card */}
       {activeGift && (
         <div className="rounded-lg bg-[#140508] border border-[#d4af37]/30 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between gap-2">
@@ -221,14 +231,14 @@ export function GiftSimulatorPanel({
               <GiftVisualIcon gift={activeGift} sizeClass="w-5 h-5" />
               <div className="min-w-0">
                 <p className="font-semibold text-[#ffe394] truncate">
-                  {activeGift.vietnameseLabel}{' '}
+                  {activeGift.ritualTitle || activeGift.ceremonyTitle} · {activeGift.vietnameseLabel}{' '}
                   <span className="font-mono-tabular text-[10.5px] text-[#cbb696]">
-                    (ID: {activeGift.giftId})
+                    (ID: {activeGift.giftId} · Ưu tiên #{activeGift.queuePriority ?? 40})
                   </span>
                 </p>
                 <p className="text-[10px] text-[#b8a285] truncate">
                   Nghi lễ: {getRitualDisplayNameVi(activeGift.ritualType)} ·{' '}
-                  {activeGift.animationDurationSec}s · Cooldown {activeGift.cooldownSec}s
+                  {activeGift.animationDurationSec}s · {activeGift.isLarge ? 'Đại lễ mưa sen lớn' : 'Lễ thường'}
                 </p>
               </div>
             </div>
@@ -258,6 +268,10 @@ export function GiftSimulatorPanel({
             </span>
           </div>
 
+          <p className="text-[10px] text-[#ffe8b3] truncate" title={previewSubtitle}>
+            Bảng trung tâm: <strong>{activeGift.ritualTitle || activeGift.ceremonyTitle}</strong> —{' '}
+            {previewSubtitle}
+          </p>
           <p className="text-[10px] text-[#cbb696] italic truncate" title={previewSpeech}>
             Giọng đọc: &ldquo;{previewSpeech}&rdquo;
           </p>
@@ -272,7 +286,7 @@ export function GiftSimulatorPanel({
           className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#d4af37] hover:bg-[#e5c24f] text-[#190c05] text-xs font-bold shadow cursor-pointer"
         >
           <Play className="w-3.5 h-3.5 fill-current shrink-0" />
-          <span className="truncate">Gửi Quà (×{safeQty}) [DEMO]</span>
+          <span className="truncate">Kích Hoạt Lễ (×{safeQty}) [DEMO]</span>
         </button>
 
         <button
@@ -282,7 +296,7 @@ export function GiftSimulatorPanel({
         >
           <Repeat className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate">
-            Combo Streak (×{Math.max(2, safeQty === 1 ? 3 : safeQty)})
+            Combo Nghi Lễ (×{Math.max(2, safeQty === 1 ? 3 : safeQty)})
           </span>
         </button>
 
@@ -292,7 +306,7 @@ export function GiftSimulatorPanel({
           className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#260e13] hover:bg-[#38141c] border border-[#d4af37]/35 text-[11px] font-medium text-[#fff4dc] cursor-pointer"
         >
           <Zap className="w-3.5 h-3.5 text-[#ffd978] shrink-0" />
-          <span className="truncate">Mưa Nhiều Quà Liên Tiếp</span>
+          <span className="truncate">Mưa Nghi Lễ Liên Tiếp</span>
         </button>
 
         <div className="flex items-center gap-1">

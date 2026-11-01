@@ -60,6 +60,7 @@ import {
 import {
   PRIMARY_DEMO_VIEWER,
   PrayerDemoTopic,
+  buildSacredAvatarDataUri,
 } from '../../systems/DemoEventManager';
 import { TOTAL_MAIN_MATS } from '../../systems/SeatManager';
 import {
@@ -298,7 +299,29 @@ export function AdminDashboard({
       userId,
       username: cleanUser,
       nickname: cleanUser,
+      avatarUrl: buildSacredAvatarDataUri(userId, cleanUser),
     };
+  };
+
+  const handleInstantNormalCeremonyDemo = () => {
+    const normalGift =
+      giftMappings.find((g) => g.enabled && g.giftId === '5655') ||
+      giftMappings.find((g) => g.enabled && !g.isLarge) ||
+      giftMappings[0];
+    if (normalGift) {
+      onSimulateGiftMapping(normalGift);
+    }
+  };
+
+  const handleInstantMajorCeremonyDemo = () => {
+    const majorGift =
+      giftMappings.find((g) => g.enabled && g.giftId === '29201') ||
+      giftMappings.find((g) => g.enabled && g.giftId === '5827') ||
+      giftMappings.find((g) => g.enabled && g.isLarge) ||
+      giftMappings[giftMappings.length - 1];
+    if (majorGift) {
+      onSimulateGiftMapping(majorGift);
+    }
   };
 
   const handleSendCustomComment = (e: React.FormEvent) => {
@@ -443,6 +466,166 @@ export function AdminDashboard({
            ========================================================================== */}
         {activeTab === 'demo' && (
           <div className="space-y-5">
+            {/* Instant Normal & Major Ceremonial Presentation Demo Card + Lotus Controls */}
+            <div className="rounded-xl bg-gradient-to-b from-[#340c14] to-[#19070b] border border-[#f5cd63]/55 p-3.5 space-y-3 shadow-md">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Flower2 className="w-4 h-4 text-[#ffd978] shrink-0" />
+                  <h3 className="font-display text-sm font-bold tracking-wide text-[#ffe494] truncate">
+                    TEST NGAY MƯA HOA SEN &amp; BẢNG NGHI LỄ TRUNG TÂM
+                  </h3>
+                </div>
+                <span className="px-2 py-0.5 rounded bg-[#140508] border border-[#d4af37]/40 text-[10px] font-semibold text-[#ffe082] shrink-0">
+                  60fps · 0 từ quà
+                </span>
+              </div>
+
+              <p className="text-[11px] text-[#d8c4a6] leading-relaxed">
+                Kiểm tra tức thì hiệu ứng hoa sen, cánh sen, lá sen rơi phân lớp cùng bảng thông báo nghi lễ trung tâm (kèm avatar tròn của Phật tử) và hàng đợi giọng đọc ưu tiên.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleInstantNormalCeremonyDemo}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#2e0f16] hover:bg-[#411520] border border-[#d4af37]/55 text-xs font-semibold text-[#fff3da] transition-colors cursor-pointer"
+                >
+                  <span>🌸 Test Nghi Lễ Thường</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleInstantMajorCeremonyDemo}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-gradient-to-r from-[#d4af37] to-[#f2ce68] hover:brightness-105 text-[#1a0c05] text-xs font-bold shadow transition-all cursor-pointer"
+                >
+                  <span>🪷 Test Đại Lễ Lớn</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={onTestGiftPriorityVoice}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#240b10] hover:bg-[#351018] border border-[#f5cd63]/45 text-[11px] font-semibold text-[#ffe394] transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                <span>Test Hàng Đợi Ưu Tiên: Đại Lễ &gt; Lễ Thường &gt; Bình Luận</span>
+              </button>
+
+              {/* Quick Lotus Shower & Center Panel Controls inside QUẢN TRỊ & DEMO */}
+              <div className="pt-2 border-t border-[#d4af37]/25 space-y-2 text-[11px]">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <div className="flex justify-between mb-0.5">
+                      <span className="text-[#cbb696]">Mật độ sen rơi</span>
+                      <span className="font-mono-tabular text-[#ffe082]">
+                        {(overlaySettings.lotusParticleDensity ?? 1.15).toFixed(2)}×
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={2.5}
+                      step={0.05}
+                      value={overlaySettings.lotusParticleDensity ?? 1.15}
+                      onChange={(e) =>
+                        onUpdateOverlaySettings({
+                          ...overlaySettings,
+                          lotusParticleDensity: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#d4af37]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mb-0.5">
+                      <span className="text-[#cbb696]">Thời lượng bảng giữa</span>
+                      <span className="font-mono-tabular text-[#ffe082]">
+                        {((overlaySettings.centerPanelDuration ?? 3400) / 1000).toFixed(1)}s
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1200}
+                      max={10000}
+                      step={200}
+                      value={overlaySettings.centerPanelDuration ?? 3400}
+                      onChange={(e) =>
+                        onUpdateOverlaySettings({
+                          ...overlaySettings,
+                          centerPanelDuration: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#d4af37]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mb-0.5">
+                      <span className="text-[#cbb696]">Cánh &amp; hoa sen</span>
+                      <span className="font-mono-tabular text-[#ffe082]">
+                        {overlaySettings.petalCount ?? 44}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={8}
+                      max={120}
+                      step={2}
+                      value={overlaySettings.petalCount ?? 44}
+                      onChange={(e) =>
+                        onUpdateOverlaySettings({
+                          ...overlaySettings,
+                          petalCount: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#d4af37]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mb-0.5">
+                      <span className="text-[#cbb696]">Lá sen rơi</span>
+                      <span className="font-mono-tabular text-[#ffe082]">
+                        {overlaySettings.leafCount ?? 16}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={2}
+                      max={60}
+                      step={1}
+                      value={overlaySettings.leafCount ?? 16}
+                      onChange={(e) =>
+                        onUpdateOverlaySettings({
+                          ...overlaySettings,
+                          leafCount: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#d4af37]"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center justify-between pt-1 cursor-pointer">
+                  <span className="text-[#e6d5b8]">
+                    Hiện avatar tròn của Phật tử trong bảng nghi lễ trung tâm
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={overlaySettings.showAvatarInCenterPanel !== false}
+                    onChange={(e) =>
+                      onUpdateOverlaySettings({
+                        ...overlaySettings,
+                        showAvatarInCenterPanel: e.target.checked,
+                      })
+                    }
+                    className="accent-[#d4af37]"
+                  />
+                </label>
+              </div>
+            </div>
+
             {/* Dynamic Gift Simulator Panel ("GIẢ LẬP QUÀ TẶNG") */}
             <GiftSimulatorPanel
               gifts={giftMappings}
@@ -2286,6 +2469,23 @@ export function AdminDashboard({
                     onUpdateOverlaySettings({
                       ...overlaySettings,
                       vertical916: e.target.checked,
+                    })
+                  }
+                  className="accent-[#d4af37]"
+                />
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-[#ffe082] font-medium">
+                  Hiện Avatar Tròn Trên Bảng Nghi Lễ Trung Tâm (showAvatarInCenterPanel)
+                </span>
+                <input
+                  type="checkbox"
+                  checked={overlaySettings.showAvatarInCenterPanel !== false}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      showAvatarInCenterPanel: e.target.checked,
                     })
                   }
                   className="accent-[#d4af37]"

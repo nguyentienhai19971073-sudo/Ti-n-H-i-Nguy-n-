@@ -1,19 +1,24 @@
 import { useMemo } from 'react';
 import { Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
 import {
+  CeremonialAnnouncementItem,
   ConnectionStatus,
   FeedNotification,
   GiftMapping,
+  LotusBurstTrigger,
   LotusCeremonyBadge,
   MeritLedgerEntry,
   ServerConnectionSnapshot,
   StreamOverlaySettings,
+  sanitizeCeremonialText,
 } from '../../types/temple';
 import { VoiceStateSnapshot } from '../../systems/VoiceManager';
 import { buildBurgundyPanelStyle } from '../../systems/OverlayTheme';
 import { Leaderboard } from './Leaderboard';
 import { BuddhistGiftPanel } from './BuddhistGiftPanel';
 import { FloatingLotusAvatars } from './FloatingLotusAvatars';
+import { LotusFallingEffect } from './LotusFallingEffect';
+import { CenterCeremonialPanel } from './CenterCeremonialPanel';
 
 interface StreamingOverlayProps {
   participantsCount: number;
@@ -27,7 +32,9 @@ interface StreamingOverlayProps {
   giftMappings: GiftMapping[];
   giftEventCounts: Record<string, number>;
   activeLotusBadges: LotusCeremonyBadge[];
-  prominentGiftBanner: {
+  activeCenterAnnouncement?: CeremonialAnnouncementItem | null;
+  activeLotusBursts?: LotusBurstTrigger[];
+  prominentGiftBanner?: {
     id: string;
     username: string;
     giftName: string;
@@ -55,7 +62,8 @@ export function StreamingOverlay({
   giftMappings,
   giftEventCounts,
   activeLotusBadges,
-  prominentGiftBanner,
+  activeCenterAnnouncement = null,
+  activeLotusBursts = [],
   connectionSnapshot,
   voiceSnapshot,
   overlaySettings,
@@ -70,15 +78,6 @@ export function StreamingOverlay({
   const topPlaqueStyle = useMemo(
     () => buildBurgundyPanelStyle(panelOpacity),
     [panelOpacity],
-  );
-  const giftBannerStyle = useMemo(
-    () =>
-      buildBurgundyPanelStyle(panelOpacity, {
-        accentGoldBorder: true,
-        scale: panelScale,
-        transformOrigin: 'bottom center',
-      }),
-    [panelOpacity, panelScale],
   );
   const subtitleStyle = useMemo(
     () =>
@@ -101,11 +100,40 @@ export function StreamingOverlay({
     [panelOpacity],
   );
 
+  const cleanSubtitle = useMemo(
+    () =>
+      voiceSnapshot.currentSubtitle
+        ? sanitizeCeremonialText(voiceSnapshot.currentSubtitle, voiceSnapshot.currentSubtitle)
+        : '',
+    [voiceSnapshot.currentSubtitle],
+  );
+
   return (
     <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-1 sm:p-1.5">
       {/* ==========================================================================
+          LAYERED SACRED LOTUS FLOWERS, PETALS & LEAVES SHOWER
+          Attenuates over the upper-center Golden Buddha sanctuary so Buddha stays clear
+         ========================================================================== */}
+      <LotusFallingEffect
+        bursts={activeLotusBursts}
+        enabled={overlaySettings.effectsEnabled}
+        density={overlaySettings.lotusParticleDensity ?? 1.15}
+        petalCount={overlaySettings.petalCount ?? 44}
+        leafCount={overlaySettings.leafCount ?? 16}
+      />
+
+      {/* ==========================================================================
+          CENTER CEREMONIAL ANNOUNCEMENT PANEL (Sequential, Non-Overlapping)
+         ========================================================================== */}
+      <CenterCeremonialPanel
+        announcement={activeCenterAnnouncement}
+        panelOpacity={panelOpacity}
+        panelScale={panelScale}
+        showAvatarInCenterPanel={overlaySettings.showAvatarInCenterPanel !== false}
+      />
+
+      {/* ==========================================================================
           FLOATING SACRED LOTUS CEREMONY EMBLEMS (Left & Right Outer Edges ONLY)
-          Zero profile avatars; never overlaps the Golden Buddha or central sanctuary!
          ========================================================================== */}
       {overlaySettings.showLotusAvatars && (
         <FloatingLotusAvatars
@@ -250,7 +278,8 @@ export function StreamingOverlay({
           <div style={eventToastStyle} className="self-start max-w-[185px] rounded px-2 py-0.5">
             {notifications.slice(0, 1).map((n) => (
               <p key={n.id} className="text-[8px] text-[#fff5e2] truncate leading-tight">
-                <strong className="text-[#ffe494]">{n.username}</strong> {n.message}
+                <strong className="text-[#ffe494]">{n.username}</strong>{' '}
+                {sanitizeCeremonialText(n.message, 'thành tâm cầu an')}
                 {n.pointsDelta ? (
                   <span className="font-mono-tabular text-[#ffd978] ml-1">+{n.pointsDelta}</span>
                 ) : null}
@@ -259,33 +288,16 @@ export function StreamingOverlay({
           </div>
         )}
 
-        {/* Compact Gift Notification Banner (Text-Only, Zero Avatars, RGBA Background) */}
-        {prominentGiftBanner && (
-          <div
-            style={giftBannerStyle}
-            className="mx-auto max-w-[206px] rounded px-2 py-[3px] text-center"
-          >
-            <p className="font-display text-[8px] tracking-wider uppercase text-[#ffe494] font-bold leading-none">
-              Công Đức Cúng Dường{prominentGiftBanner.isDemo ? ' · Demo' : ''}
-            </p>
-            <p className="font-display text-[10px] font-bold text-[#fff8e6] leading-tight truncate mt-0.5">
-              {prominentGiftBanner.username} ·{' '}
-              <span className="text-[#ffe28a]">{prominentGiftBanner.giftName}</span>{' '}
-              <span className="font-mono-tabular text-[#ffd966]">+{prominentGiftBanner.points}</span>
-            </p>
-          </div>
-        )}
-
         {/* Compact Voice Subtitle Panel & Edge Controls */}
         <div className="flex items-end justify-between gap-1">
           <div className="flex-1 flex justify-center min-w-0">
-            {voiceSnapshot.currentSubtitle ? (
+            {cleanSubtitle ? (
               <div
                 style={subtitleStyle}
                 className="max-w-[92%] rounded px-2 py-[3px] text-center"
               >
                 <p className="font-display text-[9.5px] sm:text-[10.5px] italic text-[#fff8e6] leading-snug line-clamp-2">
-                  “{voiceSnapshot.currentSubtitle}”
+                  “{cleanSubtitle}”
                 </p>
               </div>
             ) : !voiceSnapshot.audioEnabled ? (

@@ -36,9 +36,13 @@ import {
   UnknownGiftRecord,
   VISUAL_EFFECT_OPTIONS,
   VOICE_PRIORITY_OPTIONS,
+  containsForbiddenGiftWords,
   getRitualDisplayNameVi,
+  inferCanonicalCeremonialDefaults,
   normalizeGiftId,
+  renderCeremonialSubtitle,
   renderGiftVoiceTemplate,
+  sanitizeCeremonialText,
 } from '../../types/temple';
 import { GiftRegistrySnapshot, giftRegistry } from '../../systems/GiftRegistry';
 import { voiceManager } from '../../systems/VoiceManager';
@@ -57,6 +61,8 @@ interface GiftFormDraft {
   giftName: string;
   vietnameseLabel: string;
   ceremonyTitle: string;
+  ritualTitle: string;
+  ritualSubtitle: string;
   badgeCeremonyLabel: string;
   iconType: GiftIconType;
   iconUrl: string;
@@ -69,7 +75,9 @@ interface GiftFormDraft {
   effect: GiftEffectType;
   soundEffect: GiftSoundEffectType;
   ttsTemplate: string;
+  voiceTemplate: string;
   voicePriority: AnnouncementPriority;
+  queuePriority: number;
   animationDurationSec: number;
   cooldownSec: number;
   enabled: boolean;
@@ -82,6 +90,8 @@ function createEmptyDraft(): GiftFormDraft {
     giftName: '',
     vietnameseLabel: '',
     ceremonyTitle: 'CẦU BÌNH AN',
+    ritualTitle: 'CẦU BÌNH AN',
+    ritualSubtitle: 'Phật tử {username} cầu bình an',
     badgeCeremonyLabel: 'LỄ PHẬT CẦU AN',
     iconType: 'lotus',
     iconUrl: '',
@@ -94,7 +104,9 @@ function createEmptyDraft(): GiftFormDraft {
     effect: 'lotus_petals',
     soundEffect: 'offering_chime',
     ttsTemplate: DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+    voiceTemplate: DEFAULT_GIFT_THANK_YOU_TEMPLATE,
     voicePriority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 40,
     animationDurationSec: 4.5,
     cooldownSec: 1.5,
     enabled: true,
@@ -103,11 +115,21 @@ function createEmptyDraft(): GiftFormDraft {
 }
 
 function mappingToDraft(m: GiftMapping): GiftFormDraft {
+  const defaults = inferCanonicalCeremonialDefaults({
+    giftId: m.giftId,
+    ritualType: m.ritualType,
+    ceremonyTitle: m.ceremonyTitle || m.ritualTitle,
+    isLarge: m.isLarge,
+  });
+  const voiceTpl = m.voiceTemplate || m.ttsTemplate || defaults.voiceTemplate;
+  const ritualTitle = m.ritualTitle || m.ceremonyTitle || defaults.ritualTitle;
   return {
     giftId: normalizeGiftId(m.giftId),
     giftName: m.giftName || '',
     vietnameseLabel: m.vietnameseLabel || m.giftName || '',
-    ceremonyTitle: m.ceremonyTitle || 'CẦU BÌNH AN',
+    ceremonyTitle: m.ceremonyTitle || ritualTitle,
+    ritualTitle,
+    ritualSubtitle: m.ritualSubtitle || defaults.ritualSubtitle,
     badgeCeremonyLabel: m.badgeCeremonyLabel || 'LỄ PHẬT CẦU AN',
     iconType: m.iconType || 'lotus',
     iconUrl: m.iconUrl || '',
@@ -119,8 +141,10 @@ function mappingToDraft(m: GiftMapping): GiftFormDraft {
     characterAnimation: m.characterAnimation || 'walk_offer_bow',
     effect: m.effect || 'lotus_petals',
     soundEffect: m.soundEffect || 'offering_chime',
-    ttsTemplate: m.ttsTemplate || DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+    ttsTemplate: voiceTpl,
+    voiceTemplate: voiceTpl,
     voicePriority: m.voicePriority ?? AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: Number(m.queuePriority ?? defaults.queuePriority),
     animationDurationSec: Number(m.animationDurationSec ?? 4.5),
     cooldownSec: Number(m.cooldownSec ?? 1.5),
     enabled: Boolean(m.enabled),
@@ -130,10 +154,9 @@ function mappingToDraft(m: GiftMapping): GiftFormDraft {
 
 const TEMPLATE_VARIABLES: { token: string; label: string }[] = [
   { token: '{username}', label: 'Tên Phật tử' },
-  { token: '{giftName}', label: 'Tên quà' },
-  { token: '{giftCount}', label: 'Số lượng' },
-  { token: '{meritPoints}', label: 'Điểm công đức' },
+  { token: '{ritualTitle}', label: 'Tiêu đề cầu nguyện' },
   { token: '{ritualName}', label: 'Tên nghi lễ' },
+  { token: '{meritPoints}', label: 'Điểm công đức' },
 ];
 
 export function GiftManagementPanel({
@@ -245,18 +268,28 @@ export function GiftManagementPanel({
   };
 
   const handleUnknownGiftConfigure = (unk: UnknownGiftRecord) => {
+    const isMajor = (unk.diamondCount || 0) >= 99;
+    const defaults = inferCanonicalCeremonialDefaults({
+      giftId: unk.giftId,
+      isLarge: isMajor,
+    });
     openCreateForm({
       giftId: unk.giftId,
       giftName: unk.giftName,
       vietnameseLabel: unk.giftName,
+      ceremonyTitle: defaults.ritualTitle,
+      ritualTitle: defaults.ritualTitle,
+      ritualSubtitle: defaults.ritualSubtitle,
+      voiceTemplate: defaults.voiceTemplate,
+      ttsTemplate: defaults.voiceTemplate,
+      queuePriority: defaults.queuePriority,
       iconUrl: unk.iconUrl || '',
       referenceCoins: Math.max(1, unk.diamondCount || 1),
       points: Math.max(20, (unk.diamondCount || 1) * 10),
-      isLarge: (unk.diamondCount || 0) >= 99,
-      voicePriority:
-        (unk.diamondCount || 0) >= 99
-          ? AnnouncementPriority.LARGE_GIFT
-          : AnnouncementPriority.NORMAL_GIFT,
+      isLarge: isMajor,
+      voicePriority: isMajor
+        ? AnnouncementPriority.LARGE_GIFT
+        : AnnouncementPriority.NORMAL_GIFT,
     });
   };
 
@@ -264,18 +297,34 @@ export function GiftManagementPanel({
     setSelectedPresetId(presetId);
     const found = presets.find((p) => p.presetId === presetId);
     if (!found) return;
-    setDraft((prev) => ({
-      ...prev,
-      ritualType: found.ritualType,
-      characterAnimation: found.characterAnimation,
-      effect: found.effect,
-      soundEffect: found.soundEffect,
-      ttsTemplate: found.ttsTemplate,
-      voicePriority: found.voicePriority,
-      animationDurationSec: found.animationDurationSec,
-      cooldownSec: found.cooldownSec,
-      isLarge: found.voicePriority === AnnouncementPriority.LARGE_GIFT,
-    }));
+    setDraft((prev) => {
+      const defaults = inferCanonicalCeremonialDefaults({
+        giftId: prev.giftId,
+        ritualType: found.ritualType,
+        ceremonyTitle: found.ritualTitle || prev.ritualTitle,
+        isLarge: found.voicePriority === AnnouncementPriority.LARGE_GIFT,
+      });
+      const nextTitle = found.ritualTitle || defaults.ritualTitle;
+      const nextSub = found.ritualSubtitle || defaults.ritualSubtitle;
+      const nextVoice = found.voiceTemplate || found.ttsTemplate || defaults.voiceTemplate;
+      return {
+        ...prev,
+        ceremonyTitle: nextTitle,
+        ritualTitle: nextTitle,
+        ritualSubtitle: nextSub,
+        ritualType: found.ritualType,
+        characterAnimation: found.characterAnimation,
+        effect: found.effect,
+        soundEffect: found.soundEffect,
+        ttsTemplate: nextVoice,
+        voiceTemplate: nextVoice,
+        voicePriority: found.voicePriority,
+        queuePriority: found.queuePriority ?? defaults.queuePriority,
+        animationDurationSec: found.animationDurationSec,
+        cooldownSec: found.cooldownSec,
+        isLarge: found.voicePriority === AnnouncementPriority.LARGE_GIFT,
+      };
+    });
   };
 
   const handleSaveCurrentAsPreset = async () => {
@@ -284,17 +333,28 @@ export function GiftManagementPanel({
       return;
     }
     try {
+      const cleanVoice = sanitizeCeremonialText(
+        draft.voiceTemplate || draft.ttsTemplate,
+        DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+      );
       const saved = await giftRegistry.savePreset({
         name: newPresetName.trim(),
         description:
           newPresetDesc.trim() ||
           `${getRitualDisplayNameVi(draft.ritualType)} · ${draft.animationDurationSec}s`,
+        ritualTitle: sanitizeCeremonialText(draft.ritualTitle, 'CẦU BÌNH AN'),
+        ritualSubtitle: sanitizeCeremonialText(
+          draft.ritualSubtitle,
+          'Phật tử {username} cầu bình an',
+        ),
         ritualType: draft.ritualType,
         characterAnimation: draft.characterAnimation,
         effect: draft.effect,
         soundEffect: draft.soundEffect,
-        ttsTemplate: draft.ttsTemplate,
+        ttsTemplate: cleanVoice,
+        voiceTemplate: cleanVoice,
         voicePriority: draft.voicePriority,
+        queuePriority: Math.max(1, Math.min(100, Math.round(Number(draft.queuePriority) || 40))),
         animationDurationSec: draft.animationDurationSec,
         cooldownSec: draft.cooldownSec,
       });
@@ -363,14 +423,33 @@ export function GiftManagementPanel({
       return;
     }
 
+    const cleanRitualTitle = sanitizeCeremonialText(
+      draft.ritualTitle.trim() || draft.ceremonyTitle.trim() || 'CẦU BÌNH AN',
+      'CẦU BÌNH AN',
+    );
+    const cleanCeremonyTitle = sanitizeCeremonialText(
+      draft.ceremonyTitle.trim() || cleanRitualTitle,
+      cleanRitualTitle,
+    );
+    const cleanRitualSubtitle = sanitizeCeremonialText(
+      draft.ritualSubtitle.trim() || 'Phật tử {username} cầu bình an',
+      'Phật tử {username} cầu bình an',
+    );
+    const cleanVoiceTemplate = sanitizeCeremonialText(
+      (draft.voiceTemplate || draft.ttsTemplate).trim() || DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+      DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+    );
+
     const payload: Partial<GiftMapping> = {
       id: cleanGiftId,
       giftId: cleanGiftId,
       giftName: draft.giftName.trim() || draft.vietnameseLabel.trim(),
       vietnameseLabel: draft.vietnameseLabel.trim() || draft.giftName.trim(),
-      ceremonyTitle: draft.ceremonyTitle.trim() || 'CẦU BÌNH AN',
+      ceremonyTitle: cleanCeremonyTitle,
+      ritualTitle: cleanRitualTitle,
+      ritualSubtitle: cleanRitualSubtitle,
       badgeCeremonyLabel:
-        draft.badgeCeremonyLabel.trim() || draft.ceremonyTitle.trim() || 'LỄ PHẬT CẦU AN',
+        draft.badgeCeremonyLabel.trim() || cleanRitualTitle || 'LỄ PHẬT CẦU AN',
       iconType: draft.iconType,
       iconUrl: draft.iconUrl.trim() || undefined,
       uploadedImageData: draft.uploadedImageData || undefined,
@@ -382,8 +461,10 @@ export function GiftManagementPanel({
         draft.ritualType === 'no_animation' ? 'none' : draft.characterAnimation,
       effect: draft.effect,
       soundEffect: draft.soundEffect,
-      ttsTemplate: draft.ttsTemplate.trim() || DEFAULT_GIFT_THANK_YOU_TEMPLATE,
+      ttsTemplate: cleanVoiceTemplate,
+      voiceTemplate: cleanVoiceTemplate,
       voicePriority: draft.voicePriority,
+      queuePriority: Math.max(1, Math.min(100, Math.round(Number(draft.queuePriority) || 40))),
       animationDurationSec: Number(draft.animationDurationSec),
       cooldownSec: Math.max(0, Number(draft.cooldownSec) || 0),
       enabled: draft.enabled,
@@ -503,13 +584,28 @@ export function GiftManagementPanel({
     voiceManager.previewGiftVoice(previewText, playBell);
   };
 
-  const livePreviewSpeech = renderGiftVoiceTemplate(draft.ttsTemplate, {
+  const livePreviewSpeech = renderGiftVoiceTemplate(
+    draft.voiceTemplate || draft.ttsTemplate,
+    {
+      username: 'Minh Anh',
+      giftName: draft.vietnameseLabel || draft.giftName || 'Lễ Vật',
+      giftCount: 1,
+      meritPoints: draft.points || 0,
+      ritualName: getRitualDisplayNameVi(draft.ritualType),
+      ritualTitle: draft.ritualTitle || draft.ceremonyTitle,
+    },
+  );
+
+  const livePreviewSubtitle = renderCeremonialSubtitle(draft.ritualSubtitle, {
     username: 'Minh Anh',
-    giftName: draft.vietnameseLabel || draft.giftName || 'Lễ Vật',
-    giftCount: 2,
-    meritPoints: (draft.points || 0) * 2,
-    ritualName: getRitualDisplayNameVi(draft.ritualType),
+    ritualTitle: draft.ritualTitle || draft.ceremonyTitle,
+    meritPoints: draft.points || 0,
   });
+
+  const hasGiftWordsInDraft =
+    containsForbiddenGiftWords(draft.ritualTitle) ||
+    containsForbiddenGiftWords(draft.ritualSubtitle) ||
+    containsForbiddenGiftWords(draft.voiceTemplate);
 
   return (
     <div className="space-y-4 text-xs">
@@ -912,21 +1008,27 @@ export function GiftManagementPanel({
               </div>
 
               <div>
-                <label className="block text-[10.5px] text-[#cbb696] mb-1">
-                  Tiêu đề cầu nguyện
+                <label className="block text-[10.5px] font-semibold text-[#ffe082] mb-1">
+                  Tiêu đề nghi lễ (ritualTitle)
                 </label>
                 <input
                   type="text"
-                  value={draft.ceremonyTitle}
-                  onChange={(e) => setDraft({ ...draft, ceremonyTitle: e.target.value })}
+                  value={draft.ritualTitle}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      ritualTitle: e.target.value,
+                      ceremonyTitle: e.target.value,
+                    })
+                  }
                   placeholder="CẦU BÌNH AN"
-                  className="w-full px-2 py-1.5 rounded bg-[#0b0405] border border-white/15 text-xs text-[#fff4dc]"
+                  className="w-full px-2 py-1.5 rounded bg-[#0b0405] border border-[#d4af37]/40 text-xs text-[#fff4dc]"
                 />
               </div>
 
               <div>
                 <label className="block text-[10.5px] text-[#cbb696] mb-1">
-                  Nhãn Hoa Sen Avatar
+                  Nhãn Hoa Sen Mép
                 </label>
                 <input
                   type="text"
@@ -936,6 +1038,50 @@ export function GiftManagementPanel({
                   className="w-full px-2 py-1.5 rounded bg-[#0b0405] border border-white/15 text-xs text-[#fff4dc]"
                 />
               </div>
+            </div>
+
+            {/* Row 2b: Center Ceremonial Subtitle & Canonical Auto-Fill */}
+            <div className="rounded-lg bg-[#18070a] border border-[#d4af37]/30 p-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[10.5px] font-semibold text-[#ffe082]">
+                  Phụ đề Bảng Nghi Lễ Trung Tâm (ritualSubtitle)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const canon = inferCanonicalCeremonialDefaults({
+                      giftId: draft.giftId,
+                      ritualType: draft.ritualType,
+                      ceremonyTitle: draft.ritualTitle || draft.ceremonyTitle,
+                      isLarge: draft.isLarge,
+                    });
+                    setDraft({
+                      ...draft,
+                      ceremonyTitle: canon.ritualTitle,
+                      ritualTitle: canon.ritualTitle,
+                      ritualSubtitle: canon.ritualSubtitle,
+                      voiceTemplate: canon.voiceTemplate,
+                      ttsTemplate: canon.voiceTemplate,
+                      queuePriority: canon.queuePriority,
+                    });
+                  }}
+                  className="text-[10px] text-[#f5cd63] hover:underline cursor-pointer"
+                >
+                  ✨ Điền chuẩn nghi lễ Phật giáo
+                </button>
+              </div>
+              <input
+                type="text"
+                value={draft.ritualSubtitle}
+                onChange={(e) => setDraft({ ...draft, ritualSubtitle: e.target.value })}
+                placeholder="Phật tử {username} cầu bình an"
+                className="w-full px-2.5 py-1.5 rounded bg-[#0b0405] border border-white/15 text-xs text-[#fff4dc]"
+              />
+              <p className="text-[10px] text-[#cbb696]">
+                Xem trước bảng trung tâm:{' '}
+                <strong className="text-[#ffe394]">{draft.ritualTitle || 'CẦU BÌNH AN'}</strong> —{' '}
+                <span className="italic text-[#f7ead4]">{livePreviewSubtitle}</span>
+              </p>
             </div>
 
             {/* Row 3: Icon Vector Fallback + Icon URL + Optional Image Upload */}
@@ -1122,11 +1268,11 @@ export function GiftManagementPanel({
               </div>
             </div>
 
-            {/* Row 5: Priority, Duration & Cooldown */}
-            <div className="grid grid-cols-3 gap-2">
+            {/* Row 5: Priority Tier, Numeric Queue Priority, Duration & Cooldown */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
                 <label className="block text-[10.5px] text-[#cbb696] mb-1">
-                  Ưu tiên giọng đọc
+                   Bậc ưu tiên lễ
                 </label>
                 <select
                   value={draft.voicePriority}
@@ -1147,8 +1293,27 @@ export function GiftManagementPanel({
               </div>
 
               <div>
+                <label className="block text-[10.5px] font-semibold text-[#ffe082] mb-1">
+                  queuePriority (1–100)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={draft.queuePriority}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      queuePriority: Math.max(1, Math.min(100, Number(e.target.value) || 40)),
+                    })
+                  }
+                  className="w-full px-2 py-1.5 rounded bg-[#0b0405] border border-[#d4af37]/40 font-mono-tabular text-xs text-[#ffe082]"
+                />
+              </div>
+
+              <div>
                 <label className="block text-[10.5px] text-[#cbb696] mb-1">
-                  Thời lượng lễ (giây)
+                  Thời lượng lễ (s)
                 </label>
                 <input
                   type="number"
@@ -1168,7 +1333,7 @@ export function GiftManagementPanel({
 
               <div>
                 <label className="block text-[10.5px] text-[#cbb696] mb-1">
-                  Cooldown chống lặp (s)
+                  Cooldown (s)
                 </label>
                 <input
                   type="number"
@@ -1187,17 +1352,17 @@ export function GiftManagementPanel({
               </div>
             </div>
 
-            {/* Row 6: VieNeuTTS Narration Template + Variable Chips + Voice Preview */}
+            {/* Row 6: VieNeuTTS Ceremonial Narration Template (voiceTemplate) */}
             <div className="rounded-lg bg-[#160609] border border-[#d4af37]/30 p-2.5 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[11px] font-semibold text-[#ffe082]">
-                  Mẫu Lời Chúc Tự Động VieNeuTTS
+                  Mẫu Giọng Đọc Nghi Lễ VieNeuTTS (voiceTemplate)
                 </label>
                 <button
                   type="button"
                   onClick={() =>
                     handlePreviewVoiceForGift({
-                      ttsTemplate: draft.ttsTemplate,
+                      ttsTemplate: draft.voiceTemplate || draft.ttsTemplate,
                       vietnameseLabel: draft.vietnameseLabel,
                       giftName: draft.giftName,
                       points: draft.points,
@@ -1215,8 +1380,15 @@ export function GiftManagementPanel({
 
               <textarea
                 rows={2}
-                value={draft.ttsTemplate}
-                onChange={(e) => setDraft({ ...draft, ttsTemplate: e.target.value })}
+                value={draft.voiceTemplate}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    voiceTemplate: e.target.value,
+                    ttsTemplate: e.target.value,
+                  })
+                }
+                placeholder="Phật tử {username} cầu bình an."
                 className="w-full px-2.5 py-1.5 rounded bg-[#090304] border border-white/15 text-xs text-[#fff4dc] focus:outline-none focus:border-[#d4af37]"
               />
 
@@ -1227,10 +1399,14 @@ export function GiftManagementPanel({
                     key={v.token}
                     type="button"
                     onClick={() =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        ttsTemplate: `${prev.ttsTemplate.trim()} ${v.token}`,
-                      }))
+                      setDraft((prev) => {
+                        const appended = `${prev.voiceTemplate.trim()} ${v.token}`;
+                        return {
+                          ...prev,
+                          voiceTemplate: appended,
+                          ttsTemplate: appended,
+                        };
+                      })
                     }
                     title={v.label}
                     className="px-1.5 py-0.5 rounded bg-[#290d13] hover:bg-[#3c131c] border border-[#d4af37]/30 font-mono-tabular text-[10px] text-[#ffe082] cursor-pointer"
@@ -1240,8 +1416,14 @@ export function GiftManagementPanel({
                 ))}
               </div>
 
+              {hasGiftWordsInDraft && (
+                <p className="text-[10px] text-amber-200 bg-amber-950/60 border border-amber-400/40 rounded px-2 py-1">
+                  Lưu ý trang nghiêm: Hệ thống tự động loại bỏ các từ ngữ thương mại (&ldquo;quà&rdquo;, &ldquo;tặng quà&rdquo;, &ldquo;gift&rdquo;) để giữ trọn ngôn từ cầu nguyện thanh tịnh.
+                </p>
+              )}
+
               <p className="text-[10.5px] text-[#cbb696] italic bg-[#0d0406] rounded px-2 py-1 border border-white/5">
-                Xem trước (2 lễ): &ldquo;{livePreviewSpeech}&rdquo;
+                Xem trước giọng đọc: &ldquo;{livePreviewSpeech}&rdquo;
               </p>
             </div>
 
@@ -1273,10 +1455,22 @@ export function GiftManagementPanel({
                 <input
                   type="checkbox"
                   checked={draft.isLarge}
-                  onChange={(e) => setDraft({ ...draft, isLarge: e.target.checked })}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setDraft({
+                      ...draft,
+                      isLarge: checked,
+                      voicePriority: checked
+                        ? AnnouncementPriority.LARGE_GIFT
+                        : AnnouncementPriority.NORMAL_GIFT,
+                      queuePriority: checked
+                        ? Math.max(85, draft.queuePriority)
+                        : Math.min(75, draft.queuePriority),
+                    });
+                  }}
                   className="accent-[#d4af37]"
                 />
-                <span>Quà lớn (Banner Đại Lễ)</span>
+                <span>Đại Lễ Trang Nghiêm (Mưa hoa sen rực rỡ &amp; Ưu tiên #1)</span>
               </label>
             </div>
 
@@ -1556,6 +1750,129 @@ export function GiftManagementPanel({
         )}
       </div>
 
+      {/* Lotus Falling Shower & Center Ceremonial Panel Presentation Settings */}
+      <div className="rounded-xl bg-gradient-to-b from-[#250b11] to-[#16080b] border border-[#d4af37]/40 p-3 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="font-display text-xs font-bold tracking-wide text-[#ffe082]">
+            🪷 HIỆU ỨNG MƯA HOA SEN &amp; BẢNG NGHI LỄ TRUNG TÂM
+          </h4>
+          <span className="font-mono-tabular text-[10px] text-[#cbb696]">
+            Tuần tự · Không chồng lấn
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div>
+            <div className="flex justify-between text-[10.5px] mb-0.5">
+              <span className="text-[#e6d5b8]">Mật độ mưa hoa sen (lotusParticleDensity)</span>
+              <span className="font-mono-tabular text-[#ffe082]">
+                {(overlaySettings.lotusParticleDensity ?? 1.15).toFixed(2)}×
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0.3}
+              max={2.5}
+              step={0.05}
+              value={overlaySettings.lotusParticleDensity ?? 1.15}
+              onChange={(e) =>
+                onUpdateOverlaySettings({
+                  ...overlaySettings,
+                  lotusParticleDensity: Number(e.target.value),
+                })
+              }
+              className="w-full accent-[#d4af37]"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-[10.5px] mb-0.5">
+              <span className="text-[#e6d5b8]">Thời gian bảng trung tâm (centerPanelDuration)</span>
+              <span className="font-mono-tabular text-[#ffe082]">
+                {((overlaySettings.centerPanelDuration ?? 3400) / 1000).toFixed(1)}s
+              </span>
+            </div>
+            <input
+              type="range"
+              min={1200}
+              max={10000}
+              step={200}
+              value={overlaySettings.centerPanelDuration ?? 3400}
+              onChange={(e) =>
+                onUpdateOverlaySettings({
+                  ...overlaySettings,
+                  centerPanelDuration: Number(e.target.value),
+                })
+              }
+              className="w-full accent-[#d4af37]"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-[10.5px] mb-0.5">
+              <span className="text-[#e6d5b8]">Số hoa &amp; cánh sen (petalCount)</span>
+              <span className="font-mono-tabular text-[#ffe082]">
+                {overlaySettings.petalCount ?? 44}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={8}
+              max={120}
+              step={2}
+              value={overlaySettings.petalCount ?? 44}
+              onChange={(e) =>
+                onUpdateOverlaySettings({
+                  ...overlaySettings,
+                  petalCount: Number(e.target.value),
+                })
+              }
+              className="w-full accent-[#d4af37]"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between text-[10.5px] mb-0.5">
+              <span className="text-[#e6d5b8]">Số lá sen rơi (leafCount)</span>
+              <span className="font-mono-tabular text-[#ffe082]">
+                {overlaySettings.leafCount ?? 16}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={2}
+              max={60}
+              step={1}
+              value={overlaySettings.leafCount ?? 16}
+              onChange={(e) =>
+                onUpdateOverlaySettings({
+                  ...overlaySettings,
+                  leafCount: Number(e.target.value),
+                })
+              }
+              className="w-full accent-[#d4af37]"
+            />
+          </div>
+        </div>
+
+        <label className="flex items-center justify-between pt-1 border-t border-white/10 cursor-pointer">
+          <span className="text-[11px] text-[#ffe082]">
+            Hiển thị avatar tròn của Phật tử trên bảng nghi lễ trung tâm (showAvatarInCenterPanel)
+          </span>
+          <input
+            type="checkbox"
+            checked={overlaySettings.showAvatarInCenterPanel !== false}
+            onChange={(e) =>
+              onUpdateOverlaySettings({
+                ...overlaySettings,
+                showAvatarInCenterPanel: e.target.checked,
+              })
+            }
+            className="accent-[#d4af37]"
+          />
+        </label>
+      </div>
+
       {/* Global Sanctuary Ceremony Concurrency & Persistent SQLite Storage Notice */}
       <div className="rounded-xl bg-[#180a0c] border border-white/10 p-3 space-y-2.5">
         <div className="flex items-center justify-between gap-2">
@@ -1582,7 +1899,7 @@ export function GiftManagementPanel({
         />
         <div className="flex items-center justify-between pt-0.5">
           <span className="text-[11px] text-[#b8a285]">
-            Hiệu ứng hạt sen vàng, hoa sen phát sáng &amp; hào quang 3D
+            Hiệu ứng mưa hoa sen, cánh sen, lá sen &amp; hào quang 3D
           </span>
           <input
             type="checkbox"

@@ -4,6 +4,7 @@ import {
   GiftActionPreset,
   GiftMapping,
   UnknownGiftRecord,
+  normalizeCeremonialGiftMapping,
   normalizeGiftId,
 } from '../types/temple';
 import { liveConnectionManager } from './LiveConnectionManager';
@@ -66,10 +67,7 @@ export class GiftRegistry {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed?.gifts) && parsed.gifts.length > 0) {
-        this.gifts = parsed.gifts.map((g: GiftMapping) => ({
-          ...g,
-          giftId: normalizeGiftId(g.giftId),
-        }));
+        this.gifts = parsed.gifts.map((g: GiftMapping) => normalizeCeremonialGiftMapping(g));
       }
       if (Array.isArray(parsed?.presets) && parsed.presets.length > 0) {
         this.presets = parsed.presets;
@@ -122,7 +120,7 @@ export class GiftRegistry {
 
     liveConnectionManager.onGiftsUpdated(({ gifts, presets }) => {
       if (Array.isArray(gifts)) {
-        this.gifts = gifts.map((g) => ({ ...g, giftId: normalizeGiftId(g.giftId) }));
+        this.gifts = gifts.map((g) => normalizeCeremonialGiftMapping(g));
         this.rebuildIndex();
       }
       if (Array.isArray(presets)) {
@@ -209,7 +207,7 @@ export class GiftRegistry {
    * Direct programmatic replacement (used for unit tests or immediate local sync)
    */
   public setGiftsLocal(nextGifts: GiftMapping[]): void {
-    this.gifts = nextGifts.map((g) => ({ ...g, giftId: normalizeGiftId(g.giftId) }));
+    this.gifts = nextGifts.map((g) => normalizeCeremonialGiftMapping(g));
     this.rebuildIndex();
     this.persistLocalCache();
     this.notify();
@@ -223,10 +221,7 @@ export class GiftRegistry {
       const data = await res.json();
       if (data?.ok) {
         if (Array.isArray(data.gifts)) {
-          this.gifts = data.gifts.map((g: GiftMapping) => ({
-            ...g,
-            giftId: normalizeGiftId(g.giftId),
-          }));
+          this.gifts = data.gifts.map((g: GiftMapping) => normalizeCeremonialGiftMapping(g));
           this.rebuildIndex();
         }
         if (Array.isArray(data.presets)) {

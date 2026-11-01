@@ -5,8 +5,13 @@ import * as THREE from 'three';
 import {
   AnnouncementPriority,
   DEFAULT_COMMENT_VOICE_FORMULA,
+  DEFAULT_GIFT_MAPPINGS,
   DEFAULT_OVERLAY_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
+  containsForbiddenGiftWords,
+  renderCeremonialSubtitle,
+  renderGiftVoiceTemplate,
+  sanitizeCeremonialText,
 } from '../types/temple';
 import {
   COL_SPACING_X,
@@ -34,6 +39,7 @@ import { TikTokEventManager } from '../systems/TikTokEventManager';
 import {
   buildBurgundyHeaderStyle,
   buildBurgundyPanelStyle,
+  buildCenterCeremonialPanelStyle,
   buildCharacterNameLabelStyle,
   buildCommentBubbleStyle,
 } from '../systems/OverlayTheme';
@@ -714,4 +720,263 @@ runTest('9. RGBA 0.50–0.60 panel styling (no parent opacity) & zero avatars in
   }
 });
 
-console.log('\n🎉 ALL 9 CHÙA ONLINE LIVESTREAM UPGRADE TESTS PASSED SUCCESSFULLY!');
+// ============================================================================
+// 10. CANONICAL CEREMONIAL MAPPINGS & STRICT ZERO GIFT WORDS RULE
+// ============================================================================
+runTest('10. Canonical ceremonial mappings (5 rituals), zero gift words & CenterCeremonialPanel RGBA', () => {
+  const expectedByGiftId: Record<
+    string,
+    { title: string; subtitle: string; voice: string }
+  > = {
+    '5655': {
+      title: 'CẦU BÌNH AN',
+      subtitle: 'Phật tử minh.anh cầu bình an',
+      voice: 'Phật tử Minh Anh cầu bình an.',
+    },
+    '8910': {
+      title: 'CẦU SỨC KHỎE',
+      subtitle: 'Phật tử minh.anh cầu sức khỏe',
+      voice: 'Phật tử Minh Anh cầu sức khỏe.',
+    },
+    '6093': {
+      title: 'CẦU GIA ĐẠO',
+      subtitle: 'Phật tử minh.anh cầu gia đạo',
+      voice: 'Phật tử Minh Anh cầu gia đạo.',
+    },
+    '5827': {
+      title: 'CẦU TÀI LỘC',
+      subtitle: 'Phật tử minh.anh cầu tài lộc',
+      voice: 'Phật tử Minh Anh cầu tài lộc. Kính chúc gia đình luôn an lành.',
+    },
+    '29201': {
+      title: 'CẦU CÔNG ĐỨC',
+      subtitle: 'Phật tử minh.anh cầu công đức',
+      voice: 'Phật tử Minh Anh cầu công đức. Kính chúc gia đình luôn an lành.',
+    },
+  };
+
+  for (const gm of DEFAULT_GIFT_MAPPINGS) {
+    const exp = expectedByGiftId[gm.giftId];
+    assert.ok(exp, `Expected canonical mapping for giftId ${gm.giftId}`);
+    assert.equal(gm.ritualTitle, exp.title);
+    const sub = renderCeremonialSubtitle(gm.ritualSubtitle, {
+      username: 'minh.anh',
+      ritualTitle: gm.ritualTitle,
+      meritPoints: gm.points,
+    });
+    const voice = renderGiftVoiceTemplate(gm.voiceTemplate, {
+      username: 'Minh Anh',
+      meritPoints: gm.points,
+      ritualTitle: gm.ritualTitle,
+    });
+    assert.equal(sub, exp.subtitle);
+    assert.equal(voice, exp.voice);
+    assert.equal(containsForbiddenGiftWords(gm.ritualTitle), false);
+    assert.equal(containsForbiddenGiftWords(sub), false);
+    assert.equal(containsForbiddenGiftWords(voice), false);
+  }
+
+  // Verify sanitizeCeremonialText strips forbidden words while keeping Buddhist "Mâm Quả" intact
+  const dirty = 'Phật tử An đã gửi quà tặng quà gift sent a gift Mâm Quả cầu gia đạo';
+  const cleaned = sanitizeCeremonialText(dirty);
+  assert.equal(containsForbiddenGiftWords(cleaned), false, `Cleaned text still had gift words: ${cleaned}`);
+  assert.ok(cleaned.includes('Mâm Quả'), 'Legitimate Vietnamese word "Mâm Quả" must remain intact');
+
+  // Verify CenterCeremonialPanel uses RGBA background without CSS opacity or backdropFilter
+  const centerNormalStyle = buildCenterCeremonialPanelStyle(0.55, false);
+  const centerMajorStyle = buildCenterCeremonialPanelStyle(0.55, true);
+  assert.equal(centerNormalStyle.opacity, undefined);
+  assert.equal(centerMajorStyle.opacity, undefined);
+  assert.ok(String(centerNormalStyle.backgroundImage || '').includes('rgba('));
+
+  // Verify CenterCeremonialPanel is the ONLY UI component referencing avatarUrl
+  const centerSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/ui/CenterCeremonialPanel.tsx'),
+    'utf8',
+  );
+  assert.equal(centerSrc.includes('avatarUrl'), true);
+});
+
+// ============================================================================
+// 11. SEQUENTIAL CENTER PANEL QUEUE, LOTUS BURSTS & CEREMONIAL PRIORITY ORDER
+// ============================================================================
+runTest('11. Non-overlapping Center Panel queue, Lotus bursts & Major > Normal > Comment priority', () => {
+  const mgr = new TikTokEventManager();
+  mgr.clearParticipants(true);
+  mgr.setCeremonialPresentationSettings({ centerPanelDurationMs: 3000 });
+  voiceManager.stopAndClearQueue();
+
+  const t0 = Date.now();
+
+  // Trigger Normal Ceremony (Hoa Hồng 5655, queuePriority 40) — becomes immediately active
+  mgr.processEvent({
+    eventId: 'ev-rose-1',
+    type: 'gift',
+    userId: 'u-rose',
+    username: 'phattu.binhan',
+    nickname: 'Phật Tử Bình An',
+    avatarUrl: 'https://example.com/a1.png',
+    giftId: '5655',
+    giftName: 'Rose',
+    giftCount: 1,
+    isDemo: true,
+    timestamp: t0,
+  });
+
+  const snap1 = mgr.getSnapshot();
+  assert.ok(snap1.activeCenterAnnouncement, 'First ceremonial event immediately activates center panel');
+  assert.equal(snap1.activeCenterAnnouncement?.ritualTitle, 'CẦU BÌNH AN');
+  assert.equal(snap1.activeCenterAnnouncement?.ritualSubtitle, 'Phật tử phattu.binhan cầu bình an');
+  assert.equal(containsForbiddenGiftWords(snap1.activeCenterAnnouncement?.ritualSubtitle), false);
+  assert.ok(snap1.activeLotusBursts.length >= 1, 'Lotus falling burst emitted on ceremony activation');
+
+  // While first announcement is active, enqueue Mâm Quả (normal, prio 60), Đài Sen (major, prio 90), and Bảo Tháp (major, prio 100)
+  mgr.processEvent({
+    eventId: 'ev-fruit-2',
+    type: 'gift',
+    userId: 'u-fruit',
+    username: 'phattu.giadao',
+    nickname: 'Gia Đạo',
+    giftId: '6093',
+    giftName: 'Fruit Plate',
+    giftCount: 1,
+    isDemo: true,
+    timestamp: t0 + 20,
+  });
+  mgr.processEvent({
+    eventId: 'ev-lotus-3',
+    type: 'gift',
+    userId: 'u-lotus',
+    username: 'phattu.tailoc',
+    nickname: 'Tài Lộc',
+    giftId: '5827',
+    giftName: 'Lotus',
+    giftCount: 1,
+    isDemo: true,
+    timestamp: t0 + 40,
+  });
+  mgr.processEvent({
+    eventId: 'ev-pagoda-4',
+    type: 'gift',
+    userId: 'u-pagoda',
+    username: 'phattu.congduc',
+    nickname: 'Công Đức',
+    giftId: '29201',
+    giftName: 'Pagoda',
+    giftCount: 1,
+    isDemo: true,
+    timestamp: t0 + 60,
+  });
+
+  // Also send an ordinary comment — must NEVER interrupt or enter the center ceremonial panel queue
+  mgr.processEvent({
+    eventId: 'ev-comment-5',
+    type: 'comment',
+    userId: 'u-rose',
+    username: 'phattu.binhan',
+    nickname: 'Phật Tử Bình An',
+    comment: 'Nam mô A Di Đà Phật',
+    isDemo: true,
+    timestamp: t0 + 80,
+  });
+
+  // Active announcement must still be the first one (no overlap!)
+  assert.equal(mgr.getSnapshot().activeCenterAnnouncement?.userId, 'u-rose');
+
+  // Pending center queue must be strictly ordered: Bảo Tháp (100) -> Đài Sen (90) -> Mâm Quả (60)
+  const pending = mgr.getCenterAnnouncementQueueSnapshot();
+  assert.deepEqual(
+    pending.map((item) => item.ritualTitle),
+    ['CẦU CÔNG ĐỨC', 'CẦU TÀI LỘC', 'CẦU GIA ĐẠO'],
+    'Queued center announcements strictly sorted Major (100 > 90) > Normal (60)',
+  );
+
+  // Advance past active announcement expiry + transition gap => Bảo Tháp activates next with major lotus burst!
+  const firstExpiry = mgr.getSnapshot().activeCenterAnnouncement!.expiresAt;
+  mgr.advanceCenterAnnouncementQueue(firstExpiry + 10); // clears expired
+  mgr.advanceCenterAnnouncementQueue(firstExpiry + 300); // activates next after 220ms transition gap
+
+  const snapAfter = mgr.getSnapshot();
+  assert.equal(snapAfter.activeCenterAnnouncement?.ritualTitle, 'CẦU CÔNG ĐỨC');
+  assert.equal(snapAfter.activeCenterAnnouncement?.isMajor, true);
+  assert.ok(
+    snapAfter.activeLotusBursts.some((b) => b.isMajor && b.intensity > 1.3),
+    'Major ceremony emits abundant high-intensity lotus falling burst',
+  );
+
+  // Verify SmartVoiceManager numeric queuePriority tie-breaking, non-interruption & sanitization
+  const vm = new SmartVoiceManager();
+  vm.updateSettings({
+    ...DEFAULT_VOICE_SETTINGS,
+    autoNarrationEnabled: true,
+    commentCooldownSec: 0,
+  });
+  // Start active ceremonial speech first (isSpeaking = true)
+  vm.enqueue({
+    text: 'Phật tử Khởi Đầu cầu sức khỏe.',
+    priority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 50,
+    category: 'gift',
+    dedupeKey: 'vq-active-bell',
+  });
+  assert.equal(vm.getSnapshot().isSpeaking, true);
+
+  // Enqueue a comment while ceremony is speaking — must NEVER interrupt ongoing ceremony
+  vm.enqueue({
+    text: 'Phật tử An gửi lời nguyện: Bình an',
+    priority: AnnouncementPriority.ORDINARY_COMMENT,
+    category: 'ordinary_comment',
+    dedupeKey: 'vq-comment',
+  });
+  assert.equal(
+    vm.getCurrentSpeakingItem()?.dedupeKey,
+    'vq-active-bell',
+    'Comments must never interrupt an ongoing ceremonial voice announcement',
+  );
+
+  // Enqueue Normal Ceremony (40) and two Major Ceremonies (90 and 100) simultaneously
+  vm.enqueue({
+    text: 'Phật tử Bình đã gửi quà cầu bình an.',
+    priority: AnnouncementPriority.NORMAL_GIFT,
+    queuePriority: 40,
+    category: 'gift',
+    dedupeKey: 'vq-rose',
+  });
+  vm.enqueue({
+    text: 'Phật tử Tâm cầu tài lộc. Kính chúc gia đình luôn an lành.',
+    priority: AnnouncementPriority.LARGE_GIFT,
+    queuePriority: 90,
+    category: 'large_gift',
+    dedupeKey: 'vq-lotus',
+  });
+  vm.enqueue({
+    text: 'Phật tử Đức cầu công đức. Kính chúc gia đình luôn an lành.',
+    priority: AnnouncementPriority.LARGE_GIFT,
+    queuePriority: 100,
+    category: 'large_gift',
+    dedupeKey: 'vq-pagoda',
+  });
+
+  const vq = vm.getQueueSnapshot();
+  assert.deepEqual(
+    vq.map((item) => item.dedupeKey),
+    ['vq-pagoda', 'vq-lotus', 'vq-rose', 'vq-comment'],
+    'Voice queue strictly ordered by tier then numeric queuePriority (100 > 90 > 40 > comment)',
+  );
+  for (const item of vq) {
+    if (item.category === 'gift' || item.category === 'large_gift') {
+      assert.equal(
+        containsForbiddenGiftWords(item.text),
+        false,
+        `Ceremonial voice item contained forbidden gift word: ${item.text}`,
+      );
+    }
+  }
+
+  vm.stopAndClearQueue();
+  voiceManager.stopAndClearQueue();
+  mgr.clearParticipants(true);
+});
+
+console.log('\n🎉 ALL 11 CHÙA ONLINE LIVESTREAM UPGRADE TESTS PASSED SUCCESSFULLY!');
+
