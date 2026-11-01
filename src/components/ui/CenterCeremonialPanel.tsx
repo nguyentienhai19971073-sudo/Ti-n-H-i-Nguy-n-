@@ -84,7 +84,7 @@ export function CenterCeremonialPanel({
     <div
       role="status"
       aria-live="polite"
-      className="pointer-events-none absolute left-1/2 top-[53%] -translate-x-1/2 -translate-y-1/2 z-30 w-[86%] max-w-[276px] flex justify-center"
+      className="pointer-events-none absolute left-1/2 top-[56%] -translate-x-1/2 -translate-y-1/2 z-30 w-[82%] max-w-[252px] flex justify-center"
     >
       <div
         style={{
@@ -92,12 +92,13 @@ export function CenterCeremonialPanel({
           transform: Math.abs(scale - 1) > 0.005 ? `scale(${scale})` : undefined,
           transformOrigin: 'center center',
         }}
-        className={`relative w-full rounded-lg border px-3 py-2 transition-all duration-300 ease-out ${animClasses}`}
+        className={`relative w-full rounded-lg border px-2.5 py-1.5 transition-all duration-300 ease-out ${animClasses}`}
       >
         {/* Top Sacred Lotus Gold Filigree Accent */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-2 left-1/2 -translate-x-1/2 px-1.5 rounded bg-[#2a070e] border border-[#e5bd5a]/65 flex items-center gap-1 shadow-sm"
+          style={{ backgroundColor: 'rgba(38, 7, 13, 0.72)' }}
+          className="pointer-events-none absolute -top-2 left-1/2 -translate-x-1/2 px-1.5 rounded border border-[#e5bd5a]/65 flex items-center gap-1 shadow-sm"
         >
           <svg
             viewBox="0 0 24 24"
@@ -105,16 +106,16 @@ export function CenterCeremonialPanel({
           >
             <path d="M12 2.5C10 6 8.2 8.7 8.2 11.4C8.2 13.6 9.8 15.4 12 16C14.2 15.4 15.8 13.6 15.8 11.4C15.8 8.7 14 6 12 2.5ZM4.8 9.4C4.4 12.3 5.7 15 8.6 16.3C7.4 14.5 7 12.2 7.4 10.1C6.5 9.8 5.7 9.6 4.8 9.4ZM19.2 9.4C18.3 9.6 17.5 9.8 16.6 10.1C17 12.2 16.6 14.5 15.4 16.3C18.3 15 19.6 12.3 19.2 9.4ZM3.6 17C6.4 19 9.2 19.8 12 19.8C14.8 19.8 17.6 19 20.4 17C17.5 17.1 14.7 17.6 12 18.4C9.3 17.6 6.5 17.1 3.6 17Z" />
           </svg>
-          <span className="font-display text-[7.5px] tracking-[0.16em] uppercase text-[#ffe494] font-semibold leading-none py-[1px]">
+          <span className="font-display text-[7px] tracking-[0.14em] uppercase text-[#ffe494] font-semibold leading-none py-[1px]">
             {announcement.isMajor ? 'Đại Lễ Cầu Nguyện' : 'Tâm Thành Lễ Phật'}
           </span>
         </div>
 
-        <div className="flex items-center gap-2.5 pt-0.5">
-          {/* Circular TikTok Avatar — rendered ONLY inside CenterCeremonialPanel when enabled */}
+        <div className="flex items-center gap-2 pt-0.5">
+          {/* Circular TikTok Avatar — rendered ONLY inside Center Panels when enabled */}
           {showAvatarInCenterPanel && (
             <div className="relative shrink-0">
-              <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-b from-[#ffe89e] via-[#d4af37] to-[#8f6814] shadow-[0_0_12px_rgba(245,205,99,0.4)]">
+              <div className="w-8 h-8 rounded-full p-[1.5px] bg-gradient-to-b from-[#ffe89e] via-[#d4af37] to-[#8f6814] shadow-[0_0_10px_rgba(245,205,99,0.35)]">
                 <img
                   src={resolvedAvatarSrc}
                   alt={announcement.username}
@@ -131,20 +132,20 @@ export function CenterCeremonialPanel({
               showAvatarInCenterPanel ? 'text-left' : 'text-center'
             }`}
           >
-            <p className="text-[9.5px] font-semibold text-[#f8e6c4] truncate leading-tight">
+            <p className="text-[9px] font-semibold text-[#f8e6c4] truncate leading-tight">
               @{announcement.username}
             </p>
             <p
               className={`font-display font-bold tracking-wide leading-tight truncate mt-0.5 ${
                 announcement.isMajor
-                  ? 'text-[14px] sm:text-[15px] text-[#ffe999]'
-                  : 'text-[13px] sm:text-[14px] text-[#ffe28a]'
+                  ? 'text-[13px] sm:text-[14px] text-[#ffe999]'
+                  : 'text-[12px] sm:text-[13px] text-[#ffe28a]'
               }`}
             >
               {cleanTitle}
             </p>
             {cleanSubtitle && (
-              <p className="text-[9.5px] sm:text-[10px] text-[#fff6e5] leading-snug line-clamp-2 mt-0.5">
+              <p className="text-[9px] text-[#fff6e5] leading-snug line-clamp-2 mt-0.5">
                 {cleanSubtitle}
               </p>
             )}

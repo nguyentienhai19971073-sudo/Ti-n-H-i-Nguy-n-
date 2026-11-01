@@ -14,6 +14,7 @@ import { TTSConnectionTestOutcome, TTSProviderManager } from './TTSProviderManag
 
 export type AnnouncementCategory =
   | 'large_gift'
+  | 'xin_xam'
   | 'gift'
   | 'special_ritual'
   | 'prayer_comment'
@@ -202,7 +203,7 @@ export class SmartVoiceManager {
   private isSpeaking = false;
   private currentItem: QueuedAnnouncement | null = null;
   private currentSubtitle = '';
-  private apiStatus: VoiceApiConnectionState = 'untested';
+  private apiStatus: VoiceApiConnectionState = 'idle';
   private lastProviderLabel = 'VieNeu Cloud';
   private lastLatencyMs: number | null = null;
   private lastWarning = '';
@@ -290,7 +291,7 @@ export class SmartVoiceManager {
     };
 
     if (providerChanged) {
-      this.apiStatus = 'untested';
+      this.apiStatus = 'idle';
       this.lastWarning = '';
       this.lastLatencyMs = null;
     }
@@ -449,6 +450,7 @@ export class SmartVoiceManager {
 
     const isCeremonialCategory =
       params.category === 'large_gift' ||
+      params.category === 'xin_xam' ||
       params.category === 'gift' ||
       params.category === 'special_ritual';
     const cleanText = isCeremonialCategory
@@ -504,6 +506,7 @@ export class SmartVoiceManager {
 
       const catCooldowns: Record<AnnouncementCategory, number> = {
         large_gift: 0,
+        xin_xam: 0,
         gift: 0,
         special_ritual: 1500,
         prayer_comment: commentCooldownMs,
@@ -569,12 +572,14 @@ export class SmartVoiceManager {
 
     const defaultQueuePrio =
       params.priority === AnnouncementPriority.LARGE_GIFT
-        ? 90
-        : params.priority === AnnouncementPriority.NORMAL_GIFT
-          ? 50
-          : params.priority === AnnouncementPriority.SPECIAL_RITUAL
-            ? 30
-            : 10;
+        ? 95
+        : params.priority === AnnouncementPriority.XIN_XAM
+          ? 80
+          : params.priority === AnnouncementPriority.NORMAL_GIFT
+            ? 55
+            : params.priority === AnnouncementPriority.SPECIAL_RITUAL
+              ? 30
+              : 10;
 
     const item: QueuedAnnouncement = {
       id: `tts-${now}-${Math.random().toString(36).slice(2, 6)}`,
@@ -592,7 +597,7 @@ export class SmartVoiceManager {
 
     this.queue.push(item);
     // Strict priority queue order:
-    // 1. LARGE_GIFT (1) > 2. NORMAL_GIFT (2) > 3. SPECIAL_RITUAL (3) > 4/5. COMMENTS (4/5) > 6. BACKGROUND (6)
+    // 1. LARGE_GIFT (1) > 2. XIN_XAM (2) > 3. NORMAL_GIFT (3) > 4. SPECIAL_RITUAL (4) > 5/6. COMMENTS (5/6) > 7. BACKGROUND (7)
     // Within the same tier, higher numeric queuePriority speaks first, then FIFO by createdAt!
     this.queue.sort((a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority;
@@ -655,6 +660,20 @@ export class SmartVoiceManager {
       category: playBellBeforeSpeech ? 'large_gift' : 'gift',
       dedupeKey: `gift-preview-${Date.now()}`,
       playBellBeforeSpeech,
+      bypassRateLimit: true,
+    });
+  }
+
+  public previewXinXamVoice(text: string): void {
+    if (!this.audioEnabled) {
+      this.enableAudio();
+    }
+    this.enqueue({
+      text,
+      priority: AnnouncementPriority.XIN_XAM,
+      category: 'xin_xam',
+      dedupeKey: `xinxam-preview-${Date.now()}`,
+      playBellBeforeSpeech: false,
       bypassRateLimit: true,
     });
   }

@@ -31,10 +31,10 @@ function LotusCeremonyCard({
   return (
     <div
       style={{ opacity: Number(animAlpha.toFixed(2)) }}
-      className="lotus-badge-float w-[68px] sm:w-[74px] flex flex-col items-center text-center transition-opacity duration-300 select-none"
+      className="lotus-badge-float w-[60px] sm:w-[66px] flex flex-col items-center text-center transition-opacity duration-300 select-none"
     >
       {/* Sacred Golden-Pink Lotus Blossom Emblem (Zero Profile Avatars!) */}
-      <div className="relative w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center">
+      <div className="relative w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center">
         <svg
           viewBox="0 0 88 88"
           className="w-full h-full drop-shadow-[0_2px_6px_rgba(244,114,182,0.38)]"
@@ -91,8 +91,8 @@ function LotusCeremonyCard({
 
 export function FloatingLotusAvatars({
   badges,
-  panelOpacity = 0.55,
-  panelScale = 0.9,
+  panelOpacity = 0.5,
+  panelScale = 0.86,
 }: FloatingLotusAvatarsProps) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -117,7 +117,7 @@ export function FloatingLotusAvatars({
   return (
     <div
       aria-label="Phật tử đang hành lễ tại chính điện"
-      className="pointer-events-none absolute inset-x-1 top-[52%] z-10 flex items-start justify-between"
+      className="pointer-events-none absolute inset-x-1 top-[54%] z-10 flex items-start justify-between"
     >
       <div
         style={{ transform: `scale(${panelScale.toFixed(3)})`, transformOrigin: 'top left' }}

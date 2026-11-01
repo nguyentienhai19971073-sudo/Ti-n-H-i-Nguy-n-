@@ -2,6 +2,8 @@ import {
   ActiveCharacterRitual,
   ActiveGiftVisualEffect,
   ActiveWoodenFishAction,
+  ActiveXinXamStage,
+  ActiveXinXamVisualState,
   AltarStationId,
   AnnouncementPriority,
   CeremonialAnnouncementItem,
@@ -21,11 +23,13 @@ import {
   RitualActionType,
   TikTokNormalizedEvent,
   WoodenFishMilestoneTier,
+  XinXamDrawResult,
   getRitualDisplayNameVi,
   inferCanonicalCeremonialDefaults,
   normalizeGiftId,
   renderCeremonialSubtitle,
   renderGiftVoiceTemplate,
+  renderXinXamVoiceText,
   sanitizeCeremonialText,
 } from '../types/temple';
 import {
@@ -37,6 +41,7 @@ import {
   getSeatPosition,
 } from './SeatManager';
 import { giftRegistry } from './GiftRegistry';
+import { xinXamRegistry } from './XinXamRegistry';
 import { soundSynthesizer } from './SoundSynthesizer';
 import {
   formatCommentSpeechFormula,
@@ -142,6 +147,7 @@ interface QueuedAltarRitual {
   playBellBeforeSpeech?: boolean;
   isLargeCeremony?: boolean;
   isGiftCeremony?: boolean;
+  xinXamDraw?: XinXamDrawResult;
   priority: number; // lower = higher priority
   durationMs: number;
   createdAt: number;
@@ -158,6 +164,7 @@ interface PendingWoodenFishMilestone {
 const RITUAL_PRIORITY: Record<RitualActionType, number> = {
   altar_pagoda: 1,
   altar_grand_ceremony: 1,
+  xin_xam: 1,
   altar_lotus_pedestal: 2,
   glowing_lotus: 2,
   golden_light: 2,
@@ -202,6 +209,8 @@ export interface TempleCongregationState {
   } | null;
   activeCenterAnnouncement: CeremonialAnnouncementItem | null;
   queuedCenterAnnouncementCount: number;
+  activeXinXamResult: XinXamDrawResult | null;
+  activeXinXamVisual: ActiveXinXamVisualState | null;
   activeLotusBursts: LotusBurstTrigger[];
   altarGlowUntil: number;
   bellRingUntil: number;
@@ -209,6 +218,7 @@ export interface TempleCongregationState {
   fruitGlowUntil: number;
   lotusGlowUntil: number;
   pagodaGlowUntil: number;
+  xinXamGlowUntil: number;
   floatingLanternCount: number;
   totalLikesCount: number;
   totalWoodenFishCount: number;
@@ -242,11 +252,17 @@ export class TikTokEventManager {
   private activeLotusBadges: LotusCeremonyBadge[] = [];
   private prominentGiftBanner: TempleCongregationState['prominentGiftBanner'] = null;
 
-  // Priority-queued non-overlapping Center Ceremonial Announcement & Falling Lotus Shower state
+  // Priority-queued non-overlapping Center Ceremonial Announcement, Xin Xăm Result & Falling Lotus Shower state
   private centerAnnouncementQueue: CeremonialAnnouncementItem[] = [];
   private activeCenterAnnouncement: CeremonialAnnouncementItem | null = null;
+  private xinXamResultQueue: XinXamDrawResult[] = [];
+  private activeXinXamResult: XinXamDrawResult | null = null;
+  private activeXinXamVisual: ActiveXinXamVisualState | null = null;
+  private pendingXinXamDrawsByRitualId = new Map<string, XinXamDrawResult>();
+  private revealedXinXamRitualIds = new Set<string>();
+  private xinXamRevealTimers = new Map<string, number>();
   private lastCenterAnnouncementEndedAt = 0;
-  private centerPanelDurationMs = 3400;
+  private centerPanelDurationMs = 3200;
   private activeLotusBursts: LotusBurstTrigger[] = [];
 
   private altarGlowUntil = 0;
@@ -255,6 +271,7 @@ export class TikTokEventManager {
   private fruitGlowUntil = 0;
   private lotusGlowUntil = 0;
   private pagodaGlowUntil = 0;
+  private xinXamGlowUntil = 0;
   private floatingLanternCount = 6;
 
   // Interactive LIKE = GÕ MÕ counters & per-user tracking
@@ -301,6 +318,11 @@ export class TikTokEventManager {
 
     giftRegistry.subscribe((snap) => {
       this.giftMappings = snap.gifts;
+      this.initGiftCounters();
+      this.scheduleNotify();
+    });
+
+    xinXamRegistry.subscribe(() => {
       this.initGiftCounters();
       this.scheduleNotify();
     });
@@ -623,6 +645,13 @@ export class TikTokEventManager {
         next[m.id] = gid ? next[gid] ?? 0 : 0;
       }
     }
+    const xinXamGiftId = normalizeGiftId(xinXamRegistry.getSettings().giftId);
+    if (xinXamGiftId && next[xinXamGiftId] === undefined) {
+      next[xinXamGiftId] = 0;
+    }
+    if (next['xin_xam'] === undefined) {
+      next['xin_xam'] = 0;
+    }
     this.giftEventCounts = next;
   }
 
@@ -660,6 +689,7 @@ export class TikTokEventManager {
       this.activeEffects = [];
       this.activeLotusBursts = [];
       this.altarGlowUntil = 0;
+      this.xinXamGlowUntil = 0;
       this.scheduleNotify();
     }
   }
@@ -680,16 +710,22 @@ export class TikTokEventManager {
   private triggerLotusFallingBurst(params: {
     id: string;
     isMajor: boolean;
+    intensityOverride?: number;
     now: number;
   }): void {
     if (!this.effectsEnabled) return;
     this.activeLotusBursts = this.activeLotusBursts.filter(
       (b) => params.now - b.startedAt <= b.durationMs,
     );
+    const densityMult = Math.max(
+      0.3,
+      Math.min(1.8, Number(xinXamRegistry.getSettings().particleDensity || 1.0)),
+    );
+    const baseIntensity = params.intensityOverride ?? (params.isMajor ? 1.65 : 1.0);
     const burst: LotusBurstTrigger = {
       id: params.id,
       isMajor: params.isMajor,
-      intensity: params.isMajor ? 1.65 : 1.0,
+      intensity: Number((baseIntensity * densityMult).toFixed(2)),
       startedAt: params.now,
       durationMs: params.isMajor ? 6200 : 4800,
     };
@@ -754,9 +790,8 @@ export class TikTokEventManager {
   }
 
   /**
-   * Advances the sequential, non-overlapping Center Ceremonial Announcement queue.
-   * Guarantees only ONE center announcement panel is ever displayed at a time,
-   * and triggers an abundant falling lotus flower/petal/leaf burst when each ceremony activates.
+   * Advances the sequential, non-overlapping Center Ceremonial Announcement & Xin Xăm Result queue.
+   * Guarantees only ONE center panel (either XinXamResultPanel OR CenterCeremonialPanel) is ever displayed at a time!
    */
   public advanceCenterAnnouncementQueue(now = Date.now()): boolean {
     let changed = false;
@@ -765,6 +800,15 @@ export class TikTokEventManager {
       this.activeLotusBursts = this.activeLotusBursts.filter(
         (b) => now - b.startedAt <= b.durationMs,
       );
+      changed = true;
+    }
+
+    if (this.activeXinXamResult) {
+      if (now < this.activeXinXamResult.expiresAt) {
+        return changed;
+      }
+      this.activeXinXamResult = null;
+      this.lastCenterAnnouncementEndedAt = now;
       changed = true;
     }
 
@@ -777,7 +821,11 @@ export class TikTokEventManager {
       changed = true;
     }
 
-    if (!this.activeCenterAnnouncement && this.centerAnnouncementQueue.length > 0) {
+    if (
+      !this.activeXinXamResult &&
+      !this.activeCenterAnnouncement &&
+      (this.xinXamResultQueue.length > 0 || this.centerAnnouncementQueue.length > 0)
+    ) {
       if (
         this.lastCenterAnnouncementEndedAt > 0 &&
         now - this.lastCenterAnnouncementEndedAt < TikTokEventManager.CENTER_PANEL_TRANSITION_GAP_MS
@@ -785,17 +833,37 @@ export class TikTokEventManager {
         return changed;
       }
 
-      const next = this.centerAnnouncementQueue.shift();
-      if (next) {
-        next.startedAt = now;
-        next.expiresAt = now + next.durationMs;
-        this.activeCenterAnnouncement = next;
-        this.triggerLotusFallingBurst({
-          id: `lotus-burst-${next.id}`,
-          isMajor: next.isMajor,
-          now,
-        });
-        changed = true;
+      const topCeremony = this.centerAnnouncementQueue[0];
+      const preferMajorCeremonyFirst =
+        Boolean(topCeremony && topCeremony.tier === AnnouncementPriority.LARGE_GIFT) &&
+        this.xinXamResultQueue.length > 0;
+
+      if (this.xinXamResultQueue.length > 0 && !preferMajorCeremonyFirst) {
+        const nextXinXam = this.xinXamResultQueue.shift();
+        if (nextXinXam) {
+          const dispMs = Math.max(
+            2600,
+            Math.min(10000, xinXamRegistry.getSettings().resultDisplayDurationMs || 5200),
+          );
+          this.activeXinXamResult = {
+            ...nextXinXam,
+            expiresAt: now + dispMs,
+          };
+          changed = true;
+        }
+      } else if (this.centerAnnouncementQueue.length > 0) {
+        const next = this.centerAnnouncementQueue.shift();
+        if (next) {
+          next.startedAt = now;
+          next.expiresAt = now + next.durationMs;
+          this.activeCenterAnnouncement = next;
+          this.triggerLotusFallingBurst({
+            id: `lotus-burst-${next.id}`,
+            isMajor: next.isMajor,
+            now,
+          });
+          changed = true;
+        }
       }
     }
 
@@ -809,6 +877,9 @@ export class TikTokEventManager {
     for (const timer of this.ritualSafetyTimers.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timer);
     }
+    for (const timer of this.xinXamRevealTimers.values()) {
+      if (typeof window !== 'undefined') window.clearTimeout(timer);
+    }
     for (const timer of this.woodenFishSafetyTimers.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timer);
     }
@@ -816,9 +887,12 @@ export class TikTokEventManager {
       if (typeof window !== 'undefined') window.clearTimeout(timer);
     }
     this.ritualSafetyTimers.clear();
+    this.xinXamRevealTimers.clear();
     this.woodenFishSafetyTimers.clear();
     this.departureSafetyTimers.clear();
     this.arrivedRitualIds.clear();
+    this.revealedXinXamRitualIds.clear();
+    this.pendingXinXamDrawsByRitualId.clear();
     this.ritualQueue = [];
     this.occupiedStations.clear();
     this.pendingWoodenFishMap.clear();
@@ -830,6 +904,9 @@ export class TikTokEventManager {
     this.prominentGiftBanner = null;
     this.centerAnnouncementQueue = [];
     this.activeCenterAnnouncement = null;
+    this.xinXamResultQueue = [];
+    this.activeXinXamResult = null;
+    this.activeXinXamVisual = null;
     this.lastCenterAnnouncementEndedAt = 0;
     this.activeLotusBursts = [];
     this.altarGlowUntil = 0;
@@ -838,6 +915,7 @@ export class TikTokEventManager {
     this.fruitGlowUntil = 0;
     this.lotusGlowUntil = 0;
     this.pagodaGlowUntil = 0;
+    this.xinXamGlowUntil = 0;
     this.floatingLanternCount = 6;
 
     if (clearMeritHistory) {
@@ -998,7 +1076,10 @@ export class TikTokEventManager {
       activeCenterAnnouncement: this.activeCenterAnnouncement
         ? { ...this.activeCenterAnnouncement }
         : null,
-      queuedCenterAnnouncementCount: this.centerAnnouncementQueue.length,
+      queuedCenterAnnouncementCount:
+        this.centerAnnouncementQueue.length + this.xinXamResultQueue.length,
+      activeXinXamResult: this.activeXinXamResult ? { ...this.activeXinXamResult } : null,
+      activeXinXamVisual: this.activeXinXamVisual ? { ...this.activeXinXamVisual } : null,
       activeLotusBursts: [...this.activeLotusBursts],
       altarGlowUntil: this.altarGlowUntil,
       bellRingUntil: this.bellRingUntil,
@@ -1006,6 +1087,7 @@ export class TikTokEventManager {
       fruitGlowUntil: this.fruitGlowUntil,
       lotusGlowUntil: this.lotusGlowUntil,
       pagodaGlowUntil: this.pagodaGlowUntil,
+      xinXamGlowUntil: this.xinXamGlowUntil,
       floatingLanternCount: this.floatingLanternCount,
       totalLikesCount: this.totalLikesCount,
       totalWoodenFishCount: this.totalWoodenFishCount,
@@ -1327,6 +1409,11 @@ export class TikTokEventManager {
         this.bellRingUntil = Math.max(this.bellRingUntil, now + 5600);
         this.incenseGlowUntil = Math.max(this.incenseGlowUntil, now + 7500);
         break;
+      case 'xin_xam':
+        this.xinXamGlowUntil = Math.max(this.xinXamGlowUntil, now + 7500);
+        this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5200);
+        this.updateXinXamStage(userId, ritualId, 'kneeling', 0.05);
+        break;
       default:
         this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5000);
         break;
@@ -1440,13 +1527,163 @@ export class TikTokEventManager {
     this.scheduleNotify();
   }
 
+  public updateXinXamStage(
+    userId: string,
+    ritualId: string,
+    stage: ActiveXinXamStage,
+    progress: number,
+  ): void {
+    if (this.activeXinXamVisual && this.activeXinXamVisual.ritualId === ritualId) {
+      this.activeXinXamVisual = {
+        ...this.activeXinXamVisual,
+        stage,
+        progress,
+      };
+      this.scheduleNotify();
+      return;
+    }
+    const draw = this.pendingXinXamDrawsByRitualId.get(ritualId);
+    const p = this.participantsMap.get(userId);
+    if (draw && p) {
+      this.activeXinXamVisual = {
+        ritualId,
+        userId,
+        username: p.username,
+        stage,
+        progress,
+        fortuneNumber: draw.fortuneNumber,
+        fortuneCode: draw.fortuneCode,
+        category: draw.category,
+        startedAt: Date.now(),
+      };
+      this.scheduleNotify();
+    }
+  }
+
+  /**
+   * Synchronized reveal callback invoked at the exact moment the numbered bamboo stick falls out
+   * (or via fallback timer when tab is backgrounded / running in headless tests).
+   * Reveals the compact center Xin Xăm Result Panel, rings the temple bell, illuminates golden particles,
+   * and enqueues VieNeuTTS reading the exact drawn fortune number in natural Vietnamese words!
+   */
+  public notifyXinXamStickRevealed(userId: string, ritualId: string): void {
+    if (this.revealedXinXamRitualIds.has(ritualId)) return;
+    this.revealedXinXamRitualIds.add(ritualId);
+
+    const revealTimer = this.xinXamRevealTimers.get(ritualId);
+    if (revealTimer !== undefined && typeof window !== 'undefined') {
+      window.clearTimeout(revealTimer);
+    }
+    this.xinXamRevealTimers.delete(ritualId);
+
+    const p = this.participantsMap.get(userId);
+    const draw =
+      p?.activeRitual?.xinXamDraw || this.pendingXinXamDrawsByRitualId.get(ritualId) || null;
+    if (!draw) return;
+
+    const now = Date.now();
+    this.xinXamGlowUntil = Math.max(this.xinXamGlowUntil, now + 6200);
+    this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5200);
+
+    if (this.activeXinXamVisual && this.activeXinXamVisual.ritualId === ritualId) {
+      this.activeXinXamVisual = {
+        ...this.activeXinXamVisual,
+        stage: 'revealed',
+        progress: 0.66,
+      };
+    }
+
+    if (p && p.activeRitual && p.activeRitual.id === ritualId) {
+      p.activeRitual.xinXamRevealed = true;
+      p.ritualStatusLabel = `Quẻ Xăm ${draw.fortuneNumber} · ${draw.fortuneType || draw.category}`;
+      p.ritualStatusUntil = now + 5200;
+    }
+
+    if (this.effectsEnabled) {
+      soundSynthesizer.playXinXamRevealBell(0.78);
+      this.spawnEffect({
+        id: `fx-xinxam-reveal-${ritualId}`,
+        type: 'golden_particles',
+        userId: draw.userId,
+        username: draw.username,
+        giftName: `Quẻ Xăm ${draw.fortuneNumber}`,
+        points: draw.meritAwarded,
+        seatIndex: p?.seatIndex ?? 0,
+        originX: -3.55,
+        originZ: -9.05,
+        startedAt: now,
+        durationMs: 4800,
+      });
+      this.triggerLotusFallingBurst({
+        id: `lotus-xinxam-reveal-${ritualId}`,
+        isMajor: draw.category === 'Đại Cát',
+        intensityOverride: draw.category === 'Đại Cát' ? 1.55 : 1.2,
+        now,
+      });
+    }
+
+    this.pushEventNotification({
+      kind: 'xin_xam',
+      username: draw.username,
+      message: `xin được Quẻ Xăm ${draw.fortuneNumber} (${draw.category})`,
+      pointsDelta: draw.meritAwarded,
+      isDemo: draw.isDemo,
+      now,
+    });
+
+    // Queue Center Xin Xăm Result Panel (non-overlapping)
+    if (!this.xinXamResultQueue.some((q) => q.eventDedupeKey === draw.eventDedupeKey)) {
+      this.xinXamResultQueue.push({
+        ...draw,
+        expiresAt:
+          now +
+          Math.max(2600, Math.min(10000, xinXamRegistry.getSettings().resultDisplayDurationMs)),
+      });
+      this.advanceCenterAnnouncementQueue(now);
+    }
+
+    // Enqueue Synchronized VieNeuTTS Voice at Priority 2 (XIN_XAM: below LARGE_GIFT, above NORMAL_GIFT & Comments!)
+    const voiceSettings = voiceManager.getSettings();
+    if (draw.spokenText && voiceSettings.autoNarrationEnabled) {
+      voiceManager.enqueue({
+        text: draw.spokenText,
+        priority: AnnouncementPriority.XIN_XAM,
+        queuePriority: 82,
+        category: 'xin_xam',
+        userId: draw.userId,
+        username: draw.username,
+        isDemo: draw.isDemo,
+        dedupeKey: `xinxam:${draw.eventDedupeKey}`,
+        playBellBeforeSpeech: false,
+      });
+    }
+
+    this.scheduleNotify();
+  }
+
   public completeCharacterRitual(userId: string, ritualId: string): void {
     const timer = this.ritualSafetyTimers.get(ritualId);
     if (timer !== undefined && typeof window !== 'undefined') {
       window.clearTimeout(timer);
     }
     this.ritualSafetyTimers.delete(ritualId);
+
+    const revealTimer = this.xinXamRevealTimers.get(ritualId);
+    if (revealTimer !== undefined && typeof window !== 'undefined') {
+      window.clearTimeout(revealTimer);
+    }
+    this.xinXamRevealTimers.delete(ritualId);
+
+    // Ensure reveal ran if character completed Xin Xăm cleanly before reveal callback fired
+    if (this.pendingXinXamDrawsByRitualId.has(ritualId) && !this.revealedXinXamRitualIds.has(ritualId)) {
+      this.notifyXinXamStickRevealed(userId, ritualId);
+    }
+    this.pendingXinXamDrawsByRitualId.delete(ritualId);
     this.arrivedRitualIds.delete(ritualId);
+
+    if (this.activeXinXamVisual && this.activeXinXamVisual.ritualId === ritualId) {
+      this.activeXinXamVisual = null;
+    }
 
     for (const [stId, ownerId] of this.occupiedStations.entries()) {
       if (ownerId === userId) {
@@ -1505,6 +1742,7 @@ export class TikTokEventManager {
     playBellBeforeSpeech?: boolean;
     isLargeCeremony?: boolean;
     isGiftCeremony?: boolean;
+    xinXamDraw?: XinXamDrawResult;
     priorityOverride?: number;
     durationMs?: number;
   }): void {
@@ -1513,33 +1751,43 @@ export class TikTokEventManager {
 
     const priority = params.priorityOverride ?? RITUAL_PRIORITY[params.type] ?? 3;
     const durationMs = params.durationMs ?? 4400;
-    const existingIdx = this.ritualQueue.findIndex((q) => q.userId === params.userId);
 
-    if (existingIdx !== -1) {
-      if (priority <= this.ritualQueue[existingIdx].priority) {
-        this.ritualQueue[existingIdx] = {
-          ...this.ritualQueue[existingIdx],
-          giftId: params.giftId ?? this.ritualQueue[existingIdx].giftId,
-          giftName: params.giftName ?? this.ritualQueue[existingIdx].giftName,
-          type: params.type,
-          characterAnimation: params.characterAnimation,
-          customEffect: params.customEffect,
-          customSound: params.customSound,
-          awardedPoints: params.awardedPoints,
-          isDemo: params.isDemo,
-          label: params.label,
-          ceremonyBadgeTitle: params.ceremonyBadgeTitle,
-          offeringLabel: params.offeringLabel,
-          spokenText: params.spokenText ?? this.ritualQueue[existingIdx].spokenText,
-          playBellBeforeSpeech: params.playBellBeforeSpeech,
-          isLargeCeremony: params.isLargeCeremony,
-          isGiftCeremony: params.isGiftCeremony,
-          priority,
-          durationMs,
-        };
+    if (params.type === 'xin_xam' && params.xinXamDraw) {
+      // Prevent duplicate queue entry for the exact same eventDedupeKey, while allowing queued Xin Xăm across users!
+      const dupDraw = this.ritualQueue.some(
+        (q) => q.xinXamDraw?.eventDedupeKey === params.xinXamDraw?.eventDedupeKey,
+      );
+      if (dupDraw) return;
+    } else {
+      const existingIdx = this.ritualQueue.findIndex(
+        (q) => q.userId === params.userId && q.type !== 'xin_xam',
+      );
+      if (existingIdx !== -1) {
+        if (priority <= this.ritualQueue[existingIdx].priority) {
+          this.ritualQueue[existingIdx] = {
+            ...this.ritualQueue[existingIdx],
+            giftId: params.giftId ?? this.ritualQueue[existingIdx].giftId,
+            giftName: params.giftName ?? this.ritualQueue[existingIdx].giftName,
+            type: params.type,
+            characterAnimation: params.characterAnimation,
+            customEffect: params.customEffect,
+            customSound: params.customSound,
+            awardedPoints: params.awardedPoints,
+            isDemo: params.isDemo,
+            label: params.label,
+            ceremonyBadgeTitle: params.ceremonyBadgeTitle,
+            offeringLabel: params.offeringLabel,
+            spokenText: params.spokenText ?? this.ritualQueue[existingIdx].spokenText,
+            playBellBeforeSpeech: params.playBellBeforeSpeech,
+            isLargeCeremony: params.isLargeCeremony,
+            isGiftCeremony: params.isGiftCeremony,
+            priority,
+            durationMs,
+          };
+        }
+        this.tryDispatchQueuedRituals();
+        return;
       }
-      this.tryDispatchQueuedRituals();
-      return;
     }
 
     this.ritualQueue.push({
@@ -1560,6 +1808,7 @@ export class TikTokEventManager {
       playBellBeforeSpeech: params.playBellBeforeSpeech,
       isLargeCeremony: params.isLargeCeremony,
       isGiftCeremony: params.isGiftCeremony,
+      xinXamDraw: params.xinXamDraw,
       priority,
       durationMs,
       createdAt: Date.now(),
@@ -1611,8 +1860,9 @@ export class TikTokEventManager {
 
       if (p.activeRitual) continue;
 
-      // For main-hall newly arrived characters, let them claim their seat first (except overflow gallery actors who walk straight in!)
+      // For main-hall newly arrived characters, let them claim their seat first (except Xin Xăm & overflow gallery actors who walk straight in and return to their reserved seat!)
       const isMainHallStillEntering =
+        item.type !== 'xin_xam' &&
         p.seatIndex < TOTAL_MAIN_MATS &&
         (p.animState === 'walking_aisle' ||
           p.animState === 'turning_row' ||
@@ -1623,11 +1873,13 @@ export class TikTokEventManager {
 
       const seat = getSeatPosition(p.seatIndex);
       const stationLookupType: RitualActionType =
-        item.characterAnimation === 'walk_ring_bell'
-          ? 'altar_bell'
-          : item.characterAnimation === 'walk_prostrate_3'
-            ? 'altar_grand_ceremony'
-            : item.type;
+        item.type === 'xin_xam' || item.characterAnimation === 'walk_xin_xam'
+          ? 'xin_xam'
+          : item.characterAnimation === 'walk_ring_bell'
+            ? 'altar_bell'
+            : item.characterAnimation === 'walk_prostrate_3'
+              ? 'altar_grand_ceremony'
+              : item.type;
       const candidates = getCandidateStationsForRitual(stationLookupType, seat.side);
       const chosenStationId = candidates.find((st) => this.isStationAvailable(st));
       if (!chosenStationId) continue;
@@ -1646,14 +1898,15 @@ export class TikTokEventManager {
       }
 
       // Dedicated separate outbound (±0.38) and inbound return (±0.84) carpet lanes prevent aisle collisions
-      const outboundLaneX = seat.side === 'left' ? -0.38 : 0.38;
+      const outboundLaneX =
+        stationLookupType === 'xin_xam' ? -0.44 : seat.side === 'left' ? -0.38 : 0.38;
       const returnLaneX = seat.side === 'left' ? -0.84 : 0.84;
 
       const activeRitual: ActiveCharacterRitual = {
         id: item.id,
         giftId: item.giftId,
         giftName: item.giftName,
-        type: item.type,
+        type: stationLookupType === 'xin_xam' ? 'xin_xam' : item.type,
         characterAnimation: item.characterAnimation,
         customEffect: item.customEffect,
         customSound: item.customSound,
@@ -1669,6 +1922,7 @@ export class TikTokEventManager {
         returnLaneX,
         startedAt: now,
         durationMs: item.durationMs,
+        xinXamDraw: item.xinXamDraw,
       };
 
       p.activeRitual = activeRitual;
@@ -1678,6 +1932,28 @@ export class TikTokEventManager {
       p.animStateStartedAt = now;
       p.lastActivityAt = now;
 
+      if (activeRitual.type === 'xin_xam' && item.xinXamDraw) {
+        this.pendingXinXamDrawsByRitualId.set(activeRitual.id, item.xinXamDraw);
+        this.activeXinXamVisual = {
+          ritualId: activeRitual.id,
+          userId: p.userId,
+          username: p.username,
+          stage: 'walking',
+          progress: 0,
+          fortuneNumber: item.xinXamDraw.fortuneNumber,
+          fortuneCode: item.xinXamDraw.fortuneCode,
+          category: item.xinXamDraw.category,
+          startedAt: now,
+        };
+        if (typeof window !== 'undefined') {
+          const fallbackRevealMs = Math.round(item.durationMs * 0.68) + 2600;
+          const revId = window.setTimeout(() => {
+            this.notifyXinXamStickRevealed(p.userId, activeRitual.id);
+          }, fallbackRevealMs);
+          this.xinXamRevealTimers.set(activeRitual.id, revId);
+        }
+      }
+
       this.addOrRefreshLotusBadge({
         userId: p.userId,
         username: p.username,
@@ -1685,14 +1961,19 @@ export class TikTokEventManager {
         avatarUrl: p.avatarUrl,
         ceremonyTitle: item.ceremonyBadgeTitle,
         offeringLabel: item.offeringLabel,
-        preferredSide: seat.side,
+        preferredSide: activeRitual.type === 'xin_xam' ? 'left' : seat.side,
         durationMs: item.durationMs + 8000,
       });
 
       // Announce non-gift ceremonies (Follow/Share) when dispatched;
-      // Gift announcements are enqueued IMMEDIATELY upon gift receipt so they preempt ongoing comment TTS right away!
+      // Xin Xăm voice is synchronized with notifyXinXamStickRevealed when the bamboo stick falls!
       const voiceSettings = voiceManager.getSettings();
-      if (item.spokenText && !item.isGiftCeremony && voiceSettings.followAnnouncementsEnabled) {
+      if (
+        item.spokenText &&
+        !item.isGiftCeremony &&
+        activeRitual.type !== 'xin_xam' &&
+        voiceSettings.followAnnouncementsEnabled
+      ) {
         voiceManager.enqueue({
           text: item.spokenText,
           priority: AnnouncementPriority.SPECIAL_RITUAL,
@@ -2010,6 +2291,7 @@ export class TikTokEventManager {
 
       this.handleGiftEvent({
         eventId,
+        streakKey: raw.streakKey ? String(raw.streakKey) : undefined,
         userId,
         username,
         nickname,
@@ -2210,8 +2492,265 @@ export class TikTokEventManager {
     }
   }
 
+  /**
+   * Triggers a complete 3D Xin Xăm Cầu Nguyện ceremony (or queued ceremony when station is busy)
+   * using the exact same event pipeline for both real TikTok LIVE and Admin Demo Mode.
+   */
+  public triggerXinXamForUser(params: {
+    userId: string;
+    username: string;
+    nickname?: string;
+    avatarUrl?: string;
+    giftId?: string;
+    eventDedupeKey?: string;
+    forcedFortuneNumber?: number;
+    deltaCount?: number;
+    isDemo?: boolean;
+    immediateReveal?: boolean;
+    now?: number;
+  }): XinXamDrawResult | null {
+    const xinXamSettings = xinXamRegistry.getSettings();
+    if (!xinXamSettings.enabled && !params.isDemo) {
+      return null;
+    }
+
+    const now = params.now ?? Date.now();
+    const cleanUsername = params.username.trim().replace(/^@+/, '') || 'phattu';
+    const nickname = (params.nickname || cleanUsername).trim();
+    const isDemo = Boolean(params.isDemo);
+    const dedupeKey =
+      (params.eventDedupeKey || '').trim() ||
+      `xinxam_${params.userId}_${now}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // 1. Ensure 3D character & reserved seat (resets 120s inactivity timeout!)
+    const { participant } = this.ensureParticipant({
+      userId: params.userId,
+      username: cleanUsername,
+      nickname,
+      avatarUrl: params.avatarUrl,
+      isDemo,
+      now,
+    });
+
+    // 2. Draw or retrieve persisted fortune stick for this dedupeKey (prevents duplicate draws!)
+    const alreadyDrawn = xinXamRegistry
+      .getSnapshot()
+      .recentDraws.some((d) => d.eventDedupeKey === dedupeKey);
+
+    const draw = xinXamRegistry.drawFortune({
+      eventDedupeKey: dedupeKey,
+      userId: participant.userId,
+      username: participant.username,
+      nickname: participant.nickname,
+      avatarUrl: participant.avatarUrl,
+      isDemo,
+      forcedFortuneNumber: params.forcedFortuneNumber,
+    });
+
+    if (!draw) return null;
+
+    // 3. Award merit points once per unique draw
+    const countUnits = Math.max(1, params.deltaCount ?? 1);
+    const unitPoints = Math.max(0, xinXamSettings.meritPoints || 200);
+    const awardedPoints = alreadyDrawn ? 0 : unitPoints * countUnits;
+
+    if (!alreadyDrawn) {
+      this.giftEventCounts['xin_xam'] = (this.giftEventCounts['xin_xam'] || 0) + 1;
+      const cfgGiftId = normalizeGiftId(params.giftId || xinXamSettings.giftId);
+      if (cfgGiftId) {
+        this.giftEventCounts[cfgGiftId] = (this.giftEventCounts[cfgGiftId] || 0) + 1;
+      }
+      participant.points += awardedPoints;
+      participant.giftCount += 1;
+      participant.lastGiftName = 'Xin Xăm Cầu Nguyện';
+      participant.lastGiftAt = now;
+    }
+    participant.lastInteractionAt = now;
+    this.syncParticipantToLedger(participant);
+
+    this.recordGiftCalculationLog({
+      id: `glog-${dedupeKey}`,
+      userId: participant.userId,
+      username: participant.username,
+      giftId: normalizeGiftId(params.giftId || xinXamSettings.giftId) || 'xin_xam',
+      giftName: `Xin Xăm · Quẻ ${draw.fortuneNumber}`,
+      giftCount: 1,
+      unitPoints,
+      awardedPoints,
+      totalUserPoints: participant.points,
+      ritualName: 'Xin Xăm Cầu Nguyện',
+      status: 'executed',
+      isDemo,
+      timestamp: now,
+    });
+
+    // 4. Begin sacred falling pink lotus petals & warm golden illumination at ceremony start
+    if (this.effectsEnabled && !alreadyDrawn) {
+      this.xinXamGlowUntil = Math.max(this.xinXamGlowUntil, now + 6500);
+      this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 4800);
+      this.triggerLotusFallingBurst({
+        id: `lotus-xinxam-start-${dedupeKey}`,
+        isMajor: false,
+        intensityOverride: 1.15,
+        now,
+      });
+    }
+
+    const animDurationMs = Math.max(
+      3200,
+      Math.min(14000, Math.round((xinXamSettings.animationDurationSec || 6.2) * 1000)),
+    );
+
+    const eventTitle = (xinXamSettings.eventTitle || 'XIN XĂM').trim() || 'XIN XĂM';
+    const eventLabel = (xinXamSettings.eventLabel || 'Xin xăm cầu an').trim() || 'Xin xăm cầu an';
+
+    // 5. Enqueue full 3D Xin Xăm Ceremony at the dedicated Xin Xăm station (supports multi-user queue!)
+    if (!alreadyDrawn) {
+      this.enqueueAltarRitual({
+        userId: participant.userId,
+        giftId: params.giftId || xinXamSettings.giftId || 'xin_xam',
+        giftName: eventLabel,
+        type: 'xin_xam',
+        characterAnimation: 'walk_xin_xam',
+        awardedPoints,
+        isDemo,
+        label: eventLabel,
+        ceremonyBadgeTitle: eventTitle,
+        offeringLabel: eventLabel,
+        isGiftCeremony: true,
+        xinXamDraw: draw,
+        priorityOverride: RITUAL_PRIORITY.xin_xam,
+        durationMs: animDurationMs,
+      });
+
+      if (params.immediateReveal) {
+        const activeOrQueuedId =
+          participant.activeRitual?.id ||
+          this.ritualQueue.find((q) => q.xinXamDraw?.eventDedupeKey === dedupeKey)?.id;
+        if (activeOrQueuedId) {
+          this.pendingXinXamDrawsByRitualId.set(activeOrQueuedId, draw);
+          this.notifyXinXamStickRevealed(participant.userId, activeOrQueuedId);
+        }
+      }
+    }
+
+    this.scheduleNotify();
+    return draw;
+  }
+
+  /**
+   * Admin Action ("XEM TRƯỚC KẾT QUẢ"): Immediately displays any selected or random fortune card
+   * on the Center Fortune Result Panel ("🪷 KẾT QUẢ XIN XĂM") so administrators can inspect layout,
+   * classification badge, verse, interpretation, and advice.
+   */
+  public previewFortuneResultOnly(params?: {
+    userId?: string;
+    username?: string;
+    nickname?: string;
+    avatarUrl?: string;
+    forcedFortuneNumber?: number;
+  }): XinXamDrawResult | null {
+    const now = Date.now();
+    const userId = params?.userId || 'demo-minh-anh-001';
+    const username = (params?.username || 'phattu.minhanh').replace(/^@+/, '');
+    const nickname = params?.nickname || 'Minh Anh';
+    const dedupeKey = `xinxam_preview_${now}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const draw = xinXamRegistry.drawFortune({
+      eventDedupeKey: dedupeKey,
+      userId,
+      username,
+      nickname,
+      avatarUrl: params?.avatarUrl || '',
+      isDemo: true,
+      forcedFortuneNumber: params?.forcedFortuneNumber,
+    });
+    if (!draw) return null;
+
+    const dispMs = Math.max(
+      3500,
+      Math.min(10000, xinXamRegistry.getSettings().resultDisplayDurationMs || 6800),
+    );
+    this.activeCenterAnnouncement = null;
+    this.activeXinXamResult = {
+      ...draw,
+      expiresAt: now + dispMs,
+    };
+    this.scheduleNotify();
+    return draw;
+  }
+
+  /**
+   * Demo Action ("RÚT QUẺ NGẪU NHIÊN"): Draws a uniform random enabled fortune stick immediately,
+   * displays the Center Xin Xăm Result Panel, rings the temple bell, and narrates via VieNeuTTS.
+   */
+  public drawRandomFortuneOnly(params?: {
+    userId?: string;
+    username?: string;
+    nickname?: string;
+    avatarUrl?: string;
+    forcedFortuneNumber?: number;
+  }): XinXamDrawResult | null {
+    const now = Date.now();
+    const userId = params?.userId || 'demo-minh-anh-001';
+    const username = (params?.username || 'phattu.minhanh').replace(/^@+/, '');
+    const nickname = params?.nickname || 'Minh Anh';
+    const dedupeKey = `xinxam_quick_${now}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const draw = xinXamRegistry.drawFortune({
+      eventDedupeKey: dedupeKey,
+      userId,
+      username,
+      nickname,
+      avatarUrl: params?.avatarUrl || '',
+      isDemo: true,
+      forcedFortuneNumber: params?.forcedFortuneNumber,
+    });
+    if (!draw) return null;
+
+    const syntheticRitualId = `quick-reveal-${dedupeKey}`;
+    this.pendingXinXamDrawsByRitualId.set(syntheticRitualId, draw);
+    this.notifyXinXamStickRevealed(userId, syntheticRitualId);
+    this.pendingXinXamDrawsByRitualId.delete(syntheticRitualId);
+    return draw;
+  }
+
+  /**
+   * Demo Action ("THỬ HIỆU ỨNG"): Triggers falling pink lotus petals, lotus leaves,
+   * golden particles around the Xin Xăm stand, glowing bamboo fortune stick, and temple bell.
+   */
+  public triggerXinXamEffectsPreview(): void {
+    const now = Date.now();
+    this.xinXamGlowUntil = now + 5600;
+    this.altarGlowUntil = Math.max(this.altarGlowUntil, now + 5200);
+    if (this.effectsEnabled) {
+      soundSynthesizer.playXinXamRevealBell(0.78);
+      this.spawnEffect({
+        id: `fx-xinxam-demo-${now}`,
+        type: 'golden_particles',
+        userId: 'demo-fx',
+        username: 'phattu.minhanh',
+        giftName: 'Xin Xăm Cầu Nguyện',
+        points: 200,
+        seatIndex: 0,
+        originX: -3.55,
+        originZ: -9.05,
+        startedAt: now,
+        durationMs: 4800,
+      });
+      this.triggerLotusFallingBurst({
+        id: `lotus-xinxam-demo-${now}`,
+        isMajor: true,
+        intensityOverride: 1.5,
+        now,
+      });
+    }
+    this.scheduleNotify();
+  }
+
   private handleGiftEvent(params: {
     eventId: string;
+    streakKey?: string;
     userId: string;
     username: string;
     nickname: string;
@@ -2229,8 +2768,75 @@ export class TikTokEventManager {
     isDemo: boolean;
     now: number;
   }): void {
-    // 1. Strict primary lookup by normalized TikTok Gift ID string ONLY (never match by gift name!)
+    // 0. Check dedicated Xin Xăm Gift ID FIRST (requires enabled === true AND exact non-empty configured Gift ID — NEVER matches by coin price alone!)
+    const xinXamSettings = xinXamRegistry.getSettings();
+    const configuredXinXamGiftId = normalizeGiftId(xinXamSettings.giftId);
+    const matchesDedicatedXinXamId =
+      Boolean(configuredXinXamGiftId) && params.giftId === configuredXinXamGiftId;
+
     const mapping = giftRegistry.getByGiftId(params.giftId);
+    const isMappedAsXinXam = Boolean(
+      mapping &&
+        (mapping.ritualType === 'xin_xam' || mapping.characterAnimation === 'walk_xin_xam'),
+    );
+
+    if (matchesDedicatedXinXamId || isMappedAsXinXam) {
+      const xinXamAllowed = matchesDedicatedXinXamId
+        ? xinXamSettings.enabled
+        : Boolean(mapping?.enabled && xinXamSettings.enabled);
+
+      if (!xinXamAllowed) {
+        const existingLedger = this.meritLedger.get(params.userId);
+        this.recordGiftCalculationLog({
+          id: `glog-${params.eventId}`,
+          userId: params.userId,
+          username: params.username,
+          giftId: params.giftId,
+          giftName: 'Xin Xăm Cầu Nguyện',
+          giftCount: Math.max(1, params.deltaCount),
+          unitPoints: xinXamSettings.meritPoints,
+          awardedPoints: 0,
+          totalUserPoints: existingLedger?.points ?? 0,
+          ritualName: 'Xin Xăm Cầu Nguyện',
+          status: 'disabled',
+          isDemo: params.isDemo,
+          timestamp: params.now,
+        });
+        this.scheduleNotify();
+        return;
+      }
+
+      // Deduplicate streak packets so one gift streak produces at most ONE Xin Xăm fortune draw!
+      if (params.isStreakable && !params.prevStreakWasZero) {
+        if (params.deltaCount > 0) {
+          const { participant } = this.ensureParticipant(params);
+          participant.points += xinXamSettings.meritPoints * params.deltaCount;
+          participant.giftCount += params.deltaCount;
+          participant.lastInteractionAt = params.now;
+          this.syncParticipantToLedger(participant);
+          this.scheduleNotify();
+        }
+        return;
+      }
+
+      const dedupeKey =
+        params.isStreakable && params.streakKey
+          ? `xinxam_streak_${params.streakKey}`
+          : `xinxam_evt_${params.eventId}`;
+
+      this.triggerXinXamForUser({
+        userId: params.userId,
+        username: params.username,
+        nickname: params.nickname,
+        avatarUrl: params.avatarUrl,
+        giftId: params.giftId,
+        eventDedupeKey: dedupeKey,
+        deltaCount: Math.max(1, params.deltaCount),
+        isDemo: params.isDemo,
+        now: params.now,
+      });
+      return;
+    }
 
     // 2. UNKNOWN GIFT HANDLING ("QUÀ CHƯA CẤU HÌNH")
     if (!mapping) {

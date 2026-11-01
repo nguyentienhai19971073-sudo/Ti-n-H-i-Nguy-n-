@@ -51,10 +51,14 @@ const VALID_SOUNDS = new Set<string>(SOUND_EFFECT_OPTIONS.map((o) => o.value));
 const VALID_ICONS = new Set<string>([
   'rose',
   'bell',
+  'tray',
   'fruit',
   'lotus',
   'pagoda',
   'incense',
+  'lamp',
+  'bamboo_stick',
+  'custom',
   'prayer',
   'wooden_fish',
   'light',
@@ -183,13 +187,15 @@ export function validateGiftMappingPayload(
       ? 'none'
       : ritualType === 'altar_bell'
         ? 'walk_ring_bell'
-        : ritualType === 'altar_wooden_fish'
-          ? 'walk_wooden_fish'
-          : ritualType === 'altar_grand_ceremony' || ritualType === 'altar_pagoda'
-            ? 'walk_prostrate_3'
-            : ritualType === 'altar_pray_clasped'
-              ? 'walk_kneel_pray'
-              : 'walk_offer_bow';
+        : ritualType === 'xin_xam'
+          ? 'walk_xin_xam'
+          : ritualType === 'altar_wooden_fish'
+            ? 'walk_wooden_fish'
+            : ritualType === 'altar_grand_ceremony' || ritualType === 'altar_pagoda'
+              ? 'walk_prostrate_3'
+              : ritualType === 'altar_pray_clasped'
+                ? 'walk_kneel_pray'
+                : 'walk_offer_bow';
 
   const rawCharAnim = String(
     raw.characterAnimation ?? existingFallback?.characterAnimation ?? defaultCharAnim,
@@ -232,10 +238,15 @@ export function validateGiftMappingPayload(
   const rawVoicePriority = Number(
     raw.voicePriority ??
       existingFallback?.voicePriority ??
-      (points >= 500 ? AnnouncementPriority.LARGE_GIFT : AnnouncementPriority.NORMAL_GIFT),
+      (ritualType === 'xin_xam'
+        ? AnnouncementPriority.XIN_XAM
+        : points >= 500
+          ? AnnouncementPriority.LARGE_GIFT
+          : AnnouncementPriority.NORMAL_GIFT),
   );
   const voicePriority: AnnouncementPriority =
     rawVoicePriority === AnnouncementPriority.LARGE_GIFT ||
+    rawVoicePriority === AnnouncementPriority.XIN_XAM ||
     rawVoicePriority === AnnouncementPriority.NORMAL_GIFT ||
     rawVoicePriority === AnnouncementPriority.SPECIAL_RITUAL
       ? rawVoicePriority
@@ -382,6 +393,7 @@ export function validatePresetPayload(raw: Record<string, any>): GiftActionPrese
   const rawPrio = Number(raw.voicePriority ?? AnnouncementPriority.NORMAL_GIFT);
   const voicePriority: AnnouncementPriority =
     rawPrio === AnnouncementPriority.LARGE_GIFT ||
+    rawPrio === AnnouncementPriority.XIN_XAM ||
     rawPrio === AnnouncementPriority.NORMAL_GIFT ||
     rawPrio === AnnouncementPriority.SPECIAL_RITUAL
       ? rawPrio

@@ -10,6 +10,8 @@ import {
   MeritLedgerEntry,
   ServerConnectionSnapshot,
   StreamOverlaySettings,
+  XinXamDrawResult,
+  XinXamSettings,
   sanitizeCeremonialText,
 } from '../../types/temple';
 import { VoiceStateSnapshot } from '../../systems/VoiceManager';
@@ -19,6 +21,7 @@ import { BuddhistGiftPanel } from './BuddhistGiftPanel';
 import { FloatingLotusAvatars } from './FloatingLotusAvatars';
 import { LotusFallingEffect } from './LotusFallingEffect';
 import { CenterCeremonialPanel } from './CenterCeremonialPanel';
+import { XinXamResultPanel } from './XinXamResultPanel';
 
 interface StreamingOverlayProps {
   participantsCount: number;
@@ -30,9 +33,14 @@ interface StreamingOverlayProps {
   leaderboard: MeritLedgerEntry[];
   notifications?: FeedNotification[];
   giftMappings: GiftMapping[];
+  xinXamSettings?: XinXamSettings;
   giftEventCounts: Record<string, number>;
   activeLotusBadges: LotusCeremonyBadge[];
   activeCenterAnnouncement?: CeremonialAnnouncementItem | null;
+  activeXinXamResult?: XinXamDrawResult | null;
+  xinXamPanelOpacity?: number;
+  xinXamPanelScale?: number;
+  xinXamParticleDensity?: number;
   activeLotusBursts?: LotusBurstTrigger[];
   prominentGiftBanner?: {
     id: string;
@@ -48,6 +56,7 @@ interface StreamingOverlayProps {
   onEnableAudio: () => void;
   onToggleObsCleanView: () => void;
   onTriggerDemoGift?: (mapping: GiftMapping) => void;
+  onTriggerDemoXinXam?: () => void;
 }
 
 export function StreamingOverlay({
@@ -60,9 +69,14 @@ export function StreamingOverlay({
   leaderboard,
   notifications = [],
   giftMappings,
+  xinXamSettings,
   giftEventCounts,
   activeLotusBadges,
   activeCenterAnnouncement = null,
+  activeXinXamResult = null,
+  xinXamPanelOpacity,
+  xinXamPanelScale,
+  xinXamParticleDensity,
   activeLotusBursts = [],
   connectionSnapshot,
   voiceSnapshot,
@@ -70,10 +84,15 @@ export function StreamingOverlay({
   onEnableAudio,
   onToggleObsCleanView,
   onTriggerDemoGift,
+  onTriggerDemoXinXam,
 }: StreamingOverlayProps) {
   const isLive = connectionSnapshot.status === ConnectionStatus.LIVE;
-  const panelOpacity = overlaySettings.panelOpacity ?? 0.55;
-  const panelScale = overlaySettings.panelScale ?? 0.9;
+  const panelOpacity = overlaySettings.panelOpacity ?? 0.45;
+  const panelScale = overlaySettings.panelScale ?? 0.86;
+  const effectiveLotusDensity =
+    activeXinXamResult && xinXamParticleDensity
+      ? xinXamParticleDensity
+      : (overlaySettings.lotusParticleDensity ?? 1.15);
 
   const topPlaqueStyle = useMemo(
     () => buildBurgundyPanelStyle(panelOpacity),
@@ -112,14 +131,24 @@ export function StreamingOverlay({
     <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-1 sm:p-1.5">
       {/* ==========================================================================
           LAYERED SACRED LOTUS FLOWERS, PETALS & LEAVES SHOWER
-          Attenuates over the upper-center Golden Buddha sanctuary so Buddha stays clear
+          Attenuates over the elevated upper-center Golden Buddha sanctuary so Buddha stays clear
          ========================================================================== */}
       <LotusFallingEffect
         bursts={activeLotusBursts}
         enabled={overlaySettings.effectsEnabled}
-        density={overlaySettings.lotusParticleDensity ?? 1.15}
+        density={effectiveLotusDensity}
         petalCount={overlaySettings.petalCount ?? 44}
         leafCount={overlaySettings.leafCount ?? 16}
+      />
+
+      {/* ==========================================================================
+          COMPACT XIN XĂM RESULT PANEL ("🪷 XIN XĂM CẦU NGUYỆN" — Single-Line QUẺ XĂM XX)
+         ========================================================================== */}
+      <XinXamResultPanel
+        result={overlaySettings.showXinXamPanel !== false ? activeXinXamResult : null}
+        panelOpacity={xinXamPanelOpacity ?? panelOpacity}
+        panelScale={xinXamPanelScale ?? panelScale}
+        showAvatar={overlaySettings.showAvatarInCenterPanel !== false}
       />
 
       {/* ==========================================================================
@@ -256,9 +285,11 @@ export function StreamingOverlay({
               {overlaySettings.showGiftPanel && (
                 <BuddhistGiftPanel
                   giftMappings={giftMappings}
+                  xinXamSettings={xinXamSettings}
                   giftEventCounts={giftEventCounts}
                   isDemoMode={!isLive}
                   onTriggerDemoGift={onTriggerDemoGift}
+                  onTriggerDemoXinXam={onTriggerDemoXinXam}
                   panelOpacity={panelOpacity}
                   panelScale={panelScale}
                 />

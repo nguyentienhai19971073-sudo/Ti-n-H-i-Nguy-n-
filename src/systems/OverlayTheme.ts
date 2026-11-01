@@ -2,11 +2,12 @@ import type { CSSProperties } from 'react';
 import {
   DEFAULT_OVERLAY_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
+  FortuneCategory,
   StreamOverlaySettings,
   VoiceSettings,
 } from '../types/temple';
 
-export const OVERLAY_SETTINGS_STORAGE_KEY = 'chua_online_overlay_settings_v2';
+export const OVERLAY_SETTINGS_STORAGE_KEY = 'chua_online_overlay_settings_v4';
 export const VOICE_SETTINGS_STORAGE_KEY = 'chua_online_voice_settings_v2';
 
 export function clampPanelOpacity(opacity: number | undefined): number {
@@ -20,7 +21,7 @@ export function clampPanelScale(scale: number | undefined): number {
   if (typeof scale !== 'number' || !Number.isFinite(scale)) {
     return DEFAULT_OVERLAY_SETTINGS.panelScale;
   }
-  return Math.max(0.75, Math.min(1.15, Number(scale.toFixed(2))));
+  return Math.max(0.7, Math.min(1.15, Number(scale.toFixed(2))));
 }
 
 export function clampLotusDensity(density: number | undefined): number {
@@ -155,17 +156,66 @@ export function buildCenterCeremonialPanelStyle(
   isMajor = false,
 ): CSSProperties {
   const base = clampPanelOpacity(panelOpacity);
-  const topAlpha = Math.min(0.92, Number((base + 0.14).toFixed(2)));
-  const botAlpha = Math.min(0.88, Math.max(0.42, Number((base + 0.06).toFixed(2))));
+  const topAlpha = Math.min(0.88, Number((base + 0.06).toFixed(2)));
+  const botAlpha = Math.min(0.84, Math.max(0.32, Number((base - 0.02).toFixed(2))));
   return {
     backgroundImage: isMajor
-      ? `linear-gradient(180deg, rgba(78, 12, 24, ${topAlpha}) 0%, rgba(36, 7, 13, ${botAlpha}) 100%)`
-      : `linear-gradient(180deg, rgba(64, 11, 21, ${topAlpha}) 0%, rgba(30, 6, 11, ${botAlpha}) 100%)`,
-    backgroundColor: `rgba(42, 8, 15, ${topAlpha})`,
-    borderColor: isMajor ? 'rgba(247, 208, 106, 0.92)' : 'rgba(218, 178, 68, 0.78)',
+      ? `linear-gradient(180deg, rgba(74, 12, 23, ${topAlpha}) 0%, rgba(34, 7, 12, ${botAlpha}) 100%)`
+      : `linear-gradient(180deg, rgba(60, 10, 20, ${topAlpha}) 0%, rgba(28, 6, 11, ${botAlpha}) 100%)`,
+    backgroundColor: `rgba(40, 8, 14, ${base})`,
+    borderColor: isMajor ? 'rgba(245, 204, 98, 0.86)' : 'rgba(212, 175, 55, 0.68)',
     boxShadow: isMajor
-      ? '0 10px 32px rgba(0, 0, 0, 0.65), 0 0 22px rgba(245, 198, 84, 0.28)'
-      : '0 8px 24px rgba(0, 0, 0, 0.58), 0 0 14px rgba(212, 175, 55, 0.18)',
+      ? '0 8px 26px rgba(0, 0, 0, 0.55), 0 0 18px rgba(245, 198, 84, 0.22)'
+      : '0 6px 20px rgba(0, 0, 0, 0.48), 0 0 12px rgba(212, 175, 55, 0.14)',
+  };
+}
+
+export function buildXinXamResultPanelStyle(
+  panelOpacity = DEFAULT_OVERLAY_SETTINGS.panelOpacity,
+  categoryOrDaiCat: FortuneCategory | boolean = 'Trung Cát',
+): CSSProperties {
+  const base = clampPanelOpacity(panelOpacity);
+  const topAlpha = Math.min(0.88, Number((base + 0.06).toFixed(2)));
+  const botAlpha = Math.min(0.84, Math.max(0.28, Number((base - 0.02).toFixed(2))));
+
+  const category: FortuneCategory =
+    typeof categoryOrDaiCat === 'boolean'
+      ? categoryOrDaiCat
+        ? 'Đại Cát'
+        : 'Trung Cát'
+      : categoryOrDaiCat;
+
+  let borderColor = 'rgba(218, 178, 68, 0.74)';
+  let boxShadow = '0 6px 22px rgba(0, 0, 0, 0.5), 0 0 12px rgba(212, 175, 55, 0.16)';
+
+  switch (category) {
+    case 'Đại Cát':
+      borderColor = 'rgba(255, 218, 106, 0.92)';
+      boxShadow = '0 8px 26px rgba(0, 0, 0, 0.56), 0 0 20px rgba(255, 206, 86, 0.28)';
+      break;
+    case 'Trung Cát':
+      borderColor = 'rgba(244, 198, 92, 0.82)';
+      boxShadow = '0 7px 24px rgba(0, 0, 0, 0.52), 0 0 15px rgba(244, 198, 92, 0.2)';
+      break;
+    case 'Tiểu Cát':
+      borderColor = 'rgba(247, 178, 196, 0.8)';
+      boxShadow = '0 6px 22px rgba(0, 0, 0, 0.5), 0 0 14px rgba(247, 168, 192, 0.18)';
+      break;
+    case 'Bình':
+      borderColor = 'rgba(222, 196, 146, 0.72)';
+      boxShadow = '0 6px 20px rgba(0, 0, 0, 0.48), 0 0 11px rgba(212, 175, 55, 0.14)';
+      break;
+    case 'Cần Thận Trọng':
+      borderColor = 'rgba(236, 168, 118, 0.78)';
+      boxShadow = '0 6px 22px rgba(0, 0, 0, 0.52), 0 0 13px rgba(236, 158, 102, 0.17)';
+      break;
+  }
+
+  return {
+    backgroundImage: `linear-gradient(180deg, rgba(64, 11, 21, ${topAlpha}) 0%, rgba(28, 6, 11, ${botAlpha}) 100%)`,
+    backgroundColor: `rgba(38, 8, 14, ${base})`,
+    borderColor,
+    boxShadow,
   };
 }
 
@@ -198,6 +248,10 @@ export function loadPersistedOverlaySettings(obsFromUrl = false): StreamOverlayS
         parsed.showAvatarInCenterPanel !== undefined
           ? Boolean(parsed.showAvatarInCenterPanel)
           : DEFAULT_OVERLAY_SETTINGS.showAvatarInCenterPanel,
+      showXinXamPanel:
+        parsed.showXinXamPanel !== undefined
+          ? Boolean(parsed.showXinXamPanel)
+          : DEFAULT_OVERLAY_SETTINGS.showXinXamPanel,
       obsCleanView: obsFromUrl || Boolean(parsed.obsCleanView && false),
     };
   } catch {
@@ -221,6 +275,7 @@ export function savePersistedOverlaySettings(settings: StreamOverlaySettings): v
       leafCount: clampLeafCount(settings.leafCount),
       centerPanelDuration: clampCenterPanelDuration(settings.centerPanelDuration),
       showAvatarInCenterPanel: Boolean(settings.showAvatarInCenterPanel),
+      showXinXamPanel: settings.showXinXamPanel !== false,
     };
     window.localStorage.setItem(OVERLAY_SETTINGS_STORAGE_KEY, JSON.stringify(toSave));
   } catch {

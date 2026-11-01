@@ -16,6 +16,7 @@ import {
   VoiceSettings,
 } from './types/temple';
 import { GiftRegistrySnapshot, giftRegistry } from './systems/GiftRegistry';
+import { XinXamRegistrySnapshot, xinXamRegistry } from './systems/XinXamRegistry';
 import { liveConnectionManager } from './systems/LiveConnectionManager';
 import {
   TempleCongregationState,
@@ -31,6 +32,7 @@ import {
 import {
   PRIMARY_DEMO_VIEWER,
   PrayerDemoTopic,
+  VIETNAMESE_SAMPLE_POOL,
   clearPendingDemoBatches,
   createSampleFirstCommentEvent,
   createSampleFollowIncenseEvent,
@@ -40,6 +42,7 @@ import {
   createSamplePrayerTopicEvent,
   createSampleRoseGiftSameAccountEvent,
   createSampleShareLanternEvent,
+  resolveDemoViewerFromUsername,
   scheduleDemoParticipantsBatch,
   scheduleGiftPriorityVoiceDemo,
   scheduleLeaderboardRanksDemo,
@@ -47,6 +50,8 @@ import {
 import { TempleScene } from './components/three/TempleScene';
 import { StreamingOverlay } from './components/ui/StreamingOverlay';
 import { AdminDashboard } from './components/ui/AdminDashboard';
+
+let demoXinXamRotateIndex = 0;
 
 export default function App() {
   const [congregation, setCongregation] = useState<TempleCongregationState>(() =>
@@ -60,6 +65,9 @@ export default function App() {
   );
   const [registrySnapshot, setRegistrySnapshot] = useState<GiftRegistrySnapshot>(() =>
     giftRegistry.getSnapshot(),
+  );
+  const [xinXamSnapshot, setXinXamSnapshot] = useState<XinXamRegistrySnapshot>(() =>
+    xinXamRegistry.getSnapshot(),
   );
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() =>
     loadPersistedVoiceSettings(),
@@ -91,6 +99,7 @@ export default function App() {
   useEffect(() => {
     liveConnectionManager.init();
     giftRegistry.init();
+    xinXamRegistry.init();
 
     voiceManager.updateSettings(voiceSettings);
     tiktokEventManager.setMaxParticipants(overlaySettings.maxParticipants);
@@ -106,6 +115,7 @@ export default function App() {
     });
 
     const unsubRegistry = giftRegistry.subscribe(setRegistrySnapshot);
+    const unsubXinXam = xinXamRegistry.subscribe(setXinXamSnapshot);
     const unsubCongregation = tiktokEventManager.subscribe(setCongregation);
     const unsubStatus = liveConnectionManager.onStatus(setConnectionSnapshot);
     const unsubVoice = voiceManager.subscribe(setVoiceSnapshot);
@@ -156,6 +166,7 @@ export default function App() {
       if (demoIntroTimer2) window.clearTimeout(demoIntroTimer2);
       clearPendingDemoBatches();
       unsubRegistry();
+      unsubXinXam();
       unsubCongregation();
       unsubStatus();
       unsubVoice();
@@ -280,6 +291,115 @@ export default function App() {
     }, 450);
   }, [dispatchDemoEvent]);
 
+  // Trigger full 3D Xin Xăm ceremony through the real event pipeline
+  const handleTriggerDemoXinXam = useCallback(
+    (options?: { username?: string; forcedFortuneNumber?: number }) => {
+      const now = Date.now();
+      let viewer = PRIMARY_DEMO_VIEWER;
+      if (options?.username && options.username.trim()) {
+        viewer = resolveDemoViewerFromUsername(options.username);
+      } else {
+        const snap = tiktokEventManager.getSnapshot();
+        const primaryBusy = snap.participants.some(
+          (p) => p.userId === PRIMARY_DEMO_VIEWER.userId && p.activeRitual,
+        );
+        if (primaryBusy) {
+          viewer = VIETNAMESE_SAMPLE_POOL[demoXinXamRotateIndex % VIETNAMESE_SAMPLE_POOL.length];
+          demoXinXamRotateIndex += 1;
+        }
+      }
+
+      const xinXamCfg = xinXamRegistry.getSettings();
+      const configuredGiftId = xinXamCfg.giftId;
+      if (
+        configuredGiftId &&
+        xinXamCfg.enabled &&
+        options?.forcedFortuneNumber === undefined
+      ) {
+        dispatchDemoEvent({
+          eventId: `demo-xinxam-${configuredGiftId}-${now}`,
+          type: 'gift',
+          userId: viewer.userId,
+          username: viewer.username,
+          nickname: viewer.nickname,
+          avatarUrl: viewer.avatarUrl,
+          giftId: configuredGiftId,
+          giftName: xinXamCfg.eventLabel || 'Xin xăm cầu an',
+          giftCount: 1,
+          diamondCount: xinXamCfg.referenceCoins || 20,
+          isDemo: true,
+          timestamp: now,
+        });
+        return;
+      }
+
+      tiktokEventManager.triggerXinXamForUser({
+        userId: viewer.userId,
+        username: viewer.username,
+        nickname: viewer.nickname,
+        avatarUrl: viewer.avatarUrl,
+        forcedFortuneNumber: options?.forcedFortuneNumber,
+        isDemo: true,
+        now,
+      });
+    },
+    [dispatchDemoEvent],
+  );
+
+  const handleTriggerQueueDemoXinXam = useCallback(() => {
+    const queueViewers = [
+      PRIMARY_DEMO_VIEWER,
+      VIETNAMESE_SAMPLE_POOL[0],
+      VIETNAMESE_SAMPLE_POOL[1],
+    ];
+    queueViewers.forEach((viewer, idx) => {
+      window.setTimeout(() => {
+        tiktokEventManager.triggerXinXamForUser({
+          userId: viewer.userId,
+          username: viewer.username,
+          nickname: viewer.nickname,
+          avatarUrl: viewer.avatarUrl,
+          isDemo: true,
+          now: Date.now(),
+        });
+      }, idx * 280);
+    });
+  }, []);
+
+  const handleDrawRandomFortune = useCallback(() => {
+    tiktokEventManager.drawRandomFortuneOnly({
+      userId: PRIMARY_DEMO_VIEWER.userId,
+      username: PRIMARY_DEMO_VIEWER.username,
+      nickname: PRIMARY_DEMO_VIEWER.nickname,
+      avatarUrl: PRIMARY_DEMO_VIEWER.avatarUrl,
+    });
+  }, []);
+
+  const handleTriggerXinXamEffects = useCallback(() => {
+    tiktokEventManager.triggerXinXamEffectsPreview();
+  }, []);
+
+  const handlePreviewFortuneResult = useCallback(
+    (options?: { username?: string; forcedFortuneNumber?: number }) => {
+      const viewer =
+        options?.username && options.username.trim()
+          ? resolveDemoViewerFromUsername(options.username)
+          : PRIMARY_DEMO_VIEWER;
+      tiktokEventManager.previewFortuneResultOnly({
+        userId: viewer.userId,
+        username: viewer.username,
+        nickname: viewer.nickname,
+        avatarUrl: viewer.avatarUrl,
+        forcedFortuneNumber: options?.forcedFortuneNumber,
+      });
+    },
+    [],
+  );
+
+  const handlePreviewXinXamVoice = useCallback((sampleText: string) => {
+    voiceManager.previewXinXamVoice(sampleText);
+  }, []);
+
   // FULL-SCREEN OBS STREAMING CLEAN VIEW (No Admin Controls)
   if (overlaySettings.obsCleanView) {
     return (
@@ -300,6 +420,8 @@ export default function App() {
             fruitGlowUntil={congregation.fruitGlowUntil}
             lotusGlowUntil={congregation.lotusGlowUntil}
             pagodaGlowUntil={congregation.pagodaGlowUntil}
+            xinXamGlowUntil={congregation.xinXamGlowUntil}
+            activeXinXamVisual={congregation.activeXinXamVisual}
             floatingLanternCount={congregation.floatingLanternCount}
             overlaySettings={overlaySettings}
             currentSpeakerUserId={voiceSnapshot.currentSpeakerUserId}
@@ -315,9 +437,14 @@ export default function App() {
             leaderboard={congregation.leaderboard}
             notifications={congregation.notifications}
             giftMappings={giftMappings}
+            xinXamSettings={xinXamSnapshot.settings}
             giftEventCounts={congregation.giftEventCounts}
             activeLotusBadges={congregation.activeLotusBadges}
             activeCenterAnnouncement={congregation.activeCenterAnnouncement}
+            activeXinXamResult={congregation.activeXinXamResult}
+            xinXamPanelOpacity={xinXamSnapshot.settings.panelOpacity}
+            xinXamPanelScale={xinXamSnapshot.settings.panelScale}
+            xinXamParticleDensity={xinXamSnapshot.settings.particleDensity}
             activeLotusBursts={congregation.activeLotusBursts}
             prominentGiftBanner={congregation.prominentGiftBanner}
             connectionSnapshot={connectionSnapshot}
@@ -325,6 +452,7 @@ export default function App() {
             overlaySettings={overlaySettings}
             onEnableAudio={handleEnableAudio}
             onTriggerDemoGift={handleSimulateGiftMapping}
+            onTriggerDemoXinXam={() => handleTriggerDemoXinXam()}
             onToggleObsCleanView={() =>
               handleUpdateOverlaySettings({
                 ...overlaySettings,
@@ -357,6 +485,8 @@ export default function App() {
             fruitGlowUntil={congregation.fruitGlowUntil}
             lotusGlowUntil={congregation.lotusGlowUntil}
             pagodaGlowUntil={congregation.pagodaGlowUntil}
+            xinXamGlowUntil={congregation.xinXamGlowUntil}
+            activeXinXamVisual={congregation.activeXinXamVisual}
             floatingLanternCount={congregation.floatingLanternCount}
             overlaySettings={overlaySettings}
             currentSpeakerUserId={voiceSnapshot.currentSpeakerUserId}
@@ -372,9 +502,14 @@ export default function App() {
             leaderboard={congregation.leaderboard}
             notifications={congregation.notifications}
             giftMappings={giftMappings}
+            xinXamSettings={xinXamSnapshot.settings}
             giftEventCounts={congregation.giftEventCounts}
             activeLotusBadges={congregation.activeLotusBadges}
             activeCenterAnnouncement={congregation.activeCenterAnnouncement}
+            activeXinXamResult={congregation.activeXinXamResult}
+            xinXamPanelOpacity={xinXamSnapshot.settings.panelOpacity}
+            xinXamPanelScale={xinXamSnapshot.settings.panelScale}
+            xinXamParticleDensity={xinXamSnapshot.settings.particleDensity}
             activeLotusBursts={congregation.activeLotusBursts}
             prominentGiftBanner={congregation.prominentGiftBanner}
             connectionSnapshot={connectionSnapshot}
@@ -382,6 +517,7 @@ export default function App() {
             overlaySettings={overlaySettings}
             onEnableAudio={handleEnableAudio}
             onTriggerDemoGift={handleSimulateGiftMapping}
+            onTriggerDemoXinXam={() => handleTriggerDemoXinXam()}
             onToggleObsCleanView={() =>
               handleUpdateOverlaySettings({
                 ...overlaySettings,
@@ -406,6 +542,7 @@ export default function App() {
         <AdminDashboard
           connectionSnapshot={connectionSnapshot}
           registrySnapshot={registrySnapshot}
+          xinXamSnapshot={xinXamSnapshot}
           leaderboard={congregation.leaderboard}
           ceremonyQueueInspector={congregation.ceremonyQueueInspector}
           recentGiftLogs={congregation.recentGiftLogs}
@@ -455,6 +592,12 @@ export default function App() {
           onClearVoiceQueue={() => voiceManager.stopAndClearQueue()}
           onEnableAudio={handleEnableAudio}
           onUpdateOverlaySettings={handleUpdateOverlaySettings}
+          onTriggerDemoXinXam={handleTriggerDemoXinXam}
+          onTriggerQueueDemoXinXam={handleTriggerQueueDemoXinXam}
+          onDrawRandomFortune={handleDrawRandomFortune}
+          onPreviewFortuneResult={handlePreviewFortuneResult}
+          onTriggerXinXamEffects={handleTriggerXinXamEffects}
+          onPreviewXinXamVoice={handlePreviewXinXamVoice}
         />
       </div>
 
@@ -473,6 +616,7 @@ export default function App() {
             <AdminDashboard
               connectionSnapshot={connectionSnapshot}
               registrySnapshot={registrySnapshot}
+              xinXamSnapshot={xinXamSnapshot}
               leaderboard={congregation.leaderboard}
               ceremonyQueueInspector={congregation.ceremonyQueueInspector}
               recentGiftLogs={congregation.recentGiftLogs}
@@ -526,6 +670,12 @@ export default function App() {
               onClearVoiceQueue={() => voiceManager.stopAndClearQueue()}
               onEnableAudio={handleEnableAudio}
               onUpdateOverlaySettings={handleUpdateOverlaySettings}
+              onTriggerDemoXinXam={handleTriggerDemoXinXam}
+              onTriggerQueueDemoXinXam={handleTriggerQueueDemoXinXam}
+              onDrawRandomFortune={handleDrawRandomFortune}
+              onPreviewFortuneResult={handlePreviewFortuneResult}
+              onTriggerXinXamEffects={handleTriggerXinXamEffects}
+              onPreviewXinXamVoice={handlePreviewXinXamVoice}
             />
           </div>
         </div>

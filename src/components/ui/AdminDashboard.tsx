@@ -50,6 +50,7 @@ import {
   VieNeuMode,
   VieNeuVoiceOption,
   VoiceSettings,
+  buildSortedOfferingItems,
 } from '../../types/temple';
 import { GiftRegistrySnapshot } from '../../systems/GiftRegistry';
 import {
@@ -70,12 +71,15 @@ import {
 import { GiftVisualIcon } from './BuddhistGiftPanel';
 import { GiftManagementPanel } from './GiftManagementPanel';
 import { GiftSimulatorPanel } from './GiftSimulatorPanel';
+import { XinXamManagementPanel } from './XinXamManagementPanel';
+import { XinXamRegistrySnapshot } from '../../systems/XinXamRegistry';
 
-type AdminTab = 'demo' | 'tiktok' | 'characters' | 'gifts' | 'voice' | 'streaming';
+type AdminTab = 'demo' | 'xinxam' | 'tiktok' | 'characters' | 'gifts' | 'voice' | 'streaming';
 
 interface AdminDashboardProps {
   connectionSnapshot: ServerConnectionSnapshot;
   registrySnapshot: GiftRegistrySnapshot;
+  xinXamSnapshot: XinXamRegistrySnapshot;
   leaderboard: MeritLedgerEntry[];
   ceremonyQueueInspector: GiftCeremonyQueueItemSnapshot[];
   recentGiftLogs: GiftCalculationLogEntry[];
@@ -119,11 +123,18 @@ interface AdminDashboardProps {
   onClearVoiceQueue: () => void;
   onEnableAudio: () => void;
   onUpdateOverlaySettings: (settings: StreamOverlaySettings) => void;
+  onTriggerDemoXinXam: (options?: { username?: string; forcedFortuneNumber?: number }) => void;
+  onTriggerQueueDemoXinXam: () => void;
+  onDrawRandomFortune: () => void;
+  onPreviewFortuneResult?: (options?: { username?: string; forcedFortuneNumber?: number }) => void;
+  onTriggerXinXamEffects: () => void;
+  onPreviewXinXamVoice: (sampleText: string) => void;
 }
 
 export function AdminDashboard({
   connectionSnapshot,
   registrySnapshot,
+  xinXamSnapshot,
   leaderboard,
   ceremonyQueueInspector,
   recentGiftLogs,
@@ -167,6 +178,12 @@ export function AdminDashboard({
   onClearVoiceQueue,
   onEnableAudio,
   onUpdateOverlaySettings,
+  onTriggerDemoXinXam,
+  onTriggerQueueDemoXinXam,
+  onDrawRandomFortune,
+  onPreviewFortuneResult,
+  onTriggerXinXamEffects,
+  onPreviewXinXamVoice,
 }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>('demo');
   const [simulatorGiftId, setSimulatorGiftId] = useState<string | undefined>(undefined);
@@ -377,6 +394,7 @@ export function AdminDashboard({
   const tabs: { id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }[] =
     [
       { id: 'demo', label: 'Demo Lễ', icon: Play },
+      { id: 'xinxam', label: 'Xin Xăm (100)', icon: Sparkles },
       {
         id: 'gifts',
         label: unknownCount > 0 ? `Quà TikTok (${unknownCount})` : 'Quà TikTok',
@@ -508,8 +526,58 @@ export function AdminDashboard({
                 className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#240b10] hover:bg-[#351018] border border-[#f5cd63]/45 text-[11px] font-semibold text-[#ffe394] transition-colors cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                <span>Test Hàng Đợi Ưu Tiên: Đại Lễ &gt; Lễ Thường &gt; Bình Luận</span>
+                <span>Test Hàng Đợi Ưu Tiên: Đại Lễ &gt; Xin Xăm &gt; Lễ Thường &gt; Bình Luận</span>
               </button>
+
+              {/* Quick 4-Button Xin Xăm Cầu Nguyện Demo Strip */}
+              <div className="pt-2 border-t border-[#d4af37]/25 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-[#ffe89e]">
+                    🪷 Xin Xăm Cầu Nguyện (100 Quẻ · Bàn Xăm 3D Riêng)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('xinxam')}
+                    className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                  >
+                    Quản lý 100 quẻ →
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onTriggerDemoXinXam()}
+                    className="px-2 py-1.5 rounded-lg bg-gradient-to-r from-[#d4af37] to-[#f4cf65] text-[#1a0b05] text-[11px] font-bold cursor-pointer"
+                  >
+                    THỬ XIN XĂM
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onDrawRandomFortune}
+                    className="px-2 py-1.5 rounded-lg bg-[#2a0d14] hover:bg-[#3c131d] border border-[#d4af37]/45 text-[11px] font-semibold text-[#fff3da] cursor-pointer"
+                  >
+                    RÚT QUẺ NGẪU NHIÊN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onTriggerXinXamEffects}
+                    className="px-2 py-1.5 rounded-lg bg-[#240b10] hover:bg-[#351018] border border-[#d4af37]/35 text-[11px] text-[#ffe8a6] cursor-pointer"
+                  >
+                    THỬ HIỆU ỨNG
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPreviewXinXamVoice(
+                        'Phật tử Minh Anh xin được xăm số mười tám, thuộc loại Trung Cát. Gia đạo an hòa. Gia đình có thể đón nhận những điều thuận lợi khi mọi người biết quan tâm và chia sẻ. Hãy giữ lòng từ bi và sống hòa thuận.',
+                      )
+                    }
+                    className="px-2 py-1.5 rounded-lg bg-[#240b10] hover:bg-[#351018] border border-[#d4af37]/35 text-[11px] text-[#ffe8a6] cursor-pointer"
+                  >
+                    THỬ GIỌNG ĐỌC
+                  </button>
+                </div>
+              </div>
 
               {/* Quick Lotus Shower & Center Panel Controls inside QUẢN TRỊ & DEMO */}
               <div className="pt-2 border-t border-[#d4af37]/25 space-y-2 text-[11px]">
@@ -655,44 +723,66 @@ export function AdminDashboard({
               </p>
 
               <div className="grid grid-cols-1 gap-1.5 mt-2.5">
-                {giftMappings
-                  .filter((gm) => gm.enabled)
-                  .map((gm) => {
-                    const liveCount =
-                      giftEventCounts[gm.giftId] ?? giftEventCounts[gm.id] ?? 0;
-                    const isGrand =
-                      gm.ritualType === 'altar_pagoda' ||
-                      gm.ritualType === 'altar_grand_ceremony' ||
-                      gm.isLarge;
-                    return (
-                      <button
-                        key={gm.giftId || gm.id}
-                        type="button"
-                        onClick={() => onSimulateGiftMapping(gm)}
-                        className={`flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg border text-left transition-colors cursor-pointer ${
-                          isGrand
-                            ? 'bg-gradient-to-r from-[#46111b] to-[#2b0c12] hover:from-[#571622] hover:to-[#381018] border-[#f5cd63]/65 text-[#fff4d8]'
-                            : 'bg-[#260d12] hover:bg-[#351219] border-[#d4af37]/40 text-[#fff4dc]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <GiftVisualIcon gift={gm} sizeClass="w-4 h-4" />
-                          <div className="min-w-0">
-                            <p className="text-xs font-semibold text-[#ffe394] truncate">
-                              {gm.ceremonyTitle} – {gm.vietnameseLabel} –{' '}
-                              <span className="font-mono-tabular">{gm.referenceCoins} xu</span>
-                            </p>
-                            <p className="text-[10.5px] text-[#ccb79a] truncate">
-                              ID: {gm.giftId} · +{gm.points} công đức · {gm.badgeCeremonyLabel}
-                            </p>
-                          </div>
+                {buildSortedOfferingItems(giftMappings, xinXamSnapshot.settings).map((item) => {
+                  const isXinXam = item.kind === 'xin_xam';
+                  const liveCount = isXinXam
+                    ? (giftEventCounts['xin_xam'] ??
+                      (item.giftId ? giftEventCounts[item.giftId] : 0) ??
+                      0)
+                    : (giftEventCounts[item.giftId] ?? giftEventCounts[item.id] ?? 0);
+                  const gm = item.giftMapping;
+                  const meritPts = isXinXam ? xinXamSnapshot.settings.meritPoints : (gm?.points ?? 0);
+                  const isGrand = Boolean(
+                    gm &&
+                      (gm.ritualType === 'altar_pagoda' ||
+                        gm.ritualType === 'altar_grand_ceremony' ||
+                        gm.isLarge),
+                  );
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        if (isXinXam) {
+                          onTriggerDemoXinXam();
+                        } else if (gm) {
+                          onSimulateGiftMapping(gm);
+                        }
+                      }}
+                      className={`flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                        isGrand
+                          ? 'bg-gradient-to-r from-[#46111b] to-[#2b0c12] hover:from-[#571622] hover:to-[#381018] border-[#f5cd63]/65 text-[#fff4d8]'
+                          : 'bg-[#260d12] hover:bg-[#351219] border-[#d4af37]/40 text-[#fff4dc]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <GiftVisualIcon
+                          gift={{
+                            iconType: item.iconType,
+                            iconUrl: item.iconUrl,
+                            uploadedImageData: item.uploadedImageData,
+                            vietnameseLabel: item.vietnameseLabel,
+                          }}
+                          sizeClass="w-4 h-4"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-[#ffe394] whitespace-normal break-words">
+                            {item.ceremonyTitle} – {item.vietnameseLabel} –{' '}
+                            <span className="font-mono-tabular">{item.referenceCoins} xu</span>
+                          </p>
+                          <p className="text-[10.5px] text-[#ccb79a] whitespace-normal break-words">
+                            {isXinXam
+                              ? `ID: ${item.giftId || 'Chưa gắn (20 xu tham chiếu)'} · +${meritPts} công đức`
+                              : `ID: ${item.giftId} · +${meritPts} công đức · ${gm?.badgeCeremonyLabel || item.ceremonyTitle}`}
+                          </p>
                         </div>
-                        <span className="px-2 py-0.5 rounded bg-[#140608] border border-[#d4af37]/35 font-mono-tabular text-[11px] font-bold text-[#ffd978] shrink-0">
-                          {liveCount} lễ
-                        </span>
-                      </button>
-                    );
-                  })}
+                      </div>
+                      <span className="px-2 py-0.5 rounded bg-[#140608] border border-[#d4af37]/35 font-mono-tabular text-[11px] font-bold text-[#ffd978] shrink-0">
+                        {liveCount} lễ
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1012,6 +1102,25 @@ export function AdminDashboard({
               </div>
             </div>
           </div>
+        )}
+
+        {/* ==========================================================================
+            1B. XIN XĂM MANAGEMENT TAB ("QUẢN LÝ XIN XĂM" - 100 FORTUNES)
+           ========================================================================== */}
+        {activeTab === 'xinxam' && (
+          <XinXamManagementPanel
+            xinXamSnapshot={xinXamSnapshot}
+            giftMappings={giftMappings}
+            giftEventCounts={giftEventCounts}
+            overlaySettings={overlaySettings}
+            onSimulateGiftMapping={onSimulateGiftMapping}
+            onTriggerDemoXinXam={onTriggerDemoXinXam}
+            onTriggerQueueDemoXinXam={onTriggerQueueDemoXinXam}
+            onDrawRandomFortune={onDrawRandomFortune}
+            onPreviewFortuneResult={onPreviewFortuneResult}
+            onTriggerEffectsPreview={onTriggerXinXamEffects}
+            onPreviewVoice={onPreviewXinXamVoice}
+          />
         )}
 
         {/* ==========================================================================
@@ -2381,25 +2490,27 @@ export function AdminDashboard({
                   onClick={() =>
                     onUpdateOverlaySettings({
                       ...overlaySettings,
-                      panelScale: 0.9,
-                      panelOpacity: 0.55,
+                      panelScale: 0.86,
+                      panelOpacity: 0.45,
                     })
                   }
                   className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
                 >
-                  Chuẩn 90% · 0.55
+                  Chuẩn 86% · 0.45
                 </button>
               </div>
 
               <p className="text-[11px] text-[#cbb696] leading-relaxed">
-                Sử dụng màu nền RGBA bán trong suốt (chuẩn <span className="font-mono-tabular text-[#ffe082]">0.50–0.60</span>) thay vì CSS opacity toàn phần để chữ vàng/kem luôn sắc nét 100% và không bao giờ che tượng Phật.
+                Sử dụng màu nền RGBA bán trong suốt (mặc định{' '}
+                <span className="font-mono-tabular text-[#ffe082]">0.45</span>) thay vì CSS opacity
+                toàn phần để chữ vàng/kem luôn sắc nét 100% và không bao giờ che tượng Phật.
               </p>
 
               <div>
                 <div className="flex justify-between mb-1">
                   <span className="text-[11px] text-[#e6d5b8]">Kích thước thu phóng bảng UI</span>
                   <span className="font-mono-tabular text-[#ffe082]">
-                    {Math.round((overlaySettings.panelScale ?? 0.9) * 100)}%
+                    {Math.round((overlaySettings.panelScale ?? 0.86) * 100)}%
                   </span>
                 </div>
                 <input
@@ -2407,7 +2518,7 @@ export function AdminDashboard({
                   min={0.7}
                   max={1.15}
                   step={0.02}
-                  value={overlaySettings.panelScale ?? 0.9}
+                  value={overlaySettings.panelScale ?? 0.86}
                   onChange={(e) =>
                     onUpdateOverlaySettings({
                       ...overlaySettings,
@@ -2421,10 +2532,10 @@ export function AdminDashboard({
               <div>
                 <div className="flex justify-between mb-1">
                   <span className="text-[11px] text-[#e6d5b8]">
-                    Độ đậm nền RGBA (Khuyên dùng 0.50–0.60)
+                    Độ đậm nền RGBA (Mặc định 0.45)
                   </span>
                   <span className="font-mono-tabular text-[#ffe082]">
-                    {(overlaySettings.panelOpacity ?? 0.55).toFixed(2)}
+                    {(overlaySettings.panelOpacity ?? 0.45).toFixed(2)}
                   </span>
                 </div>
                 <input
@@ -2432,7 +2543,7 @@ export function AdminDashboard({
                   min={0.25}
                   max={0.88}
                   step={0.01}
-                  value={overlaySettings.panelOpacity ?? 0.55}
+                  value={overlaySettings.panelOpacity ?? 0.45}
                   onChange={(e) =>
                     onUpdateOverlaySettings({
                       ...overlaySettings,
@@ -2477,7 +2588,7 @@ export function AdminDashboard({
 
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="text-[#ffe082] font-medium">
-                  Hiện Avatar Tròn Trên Bảng Nghi Lễ Trung Tâm (showAvatarInCenterPanel)
+                  Hiện Avatar Tròn Trên Bảng Nghi Lễ &amp; Xin Xăm Trung Tâm
                 </span>
                 <input
                   type="checkbox"
@@ -2486,6 +2597,23 @@ export function AdminDashboard({
                     onUpdateOverlaySettings({
                       ...overlaySettings,
                       showAvatarInCenterPanel: e.target.checked,
+                    })
+                  }
+                  className="accent-[#d4af37]"
+                />
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-[#ffe082] font-medium">
+                  Hiển thị bảng thu gọn &ldquo;🪷 Xin Xăm Cầu Nguyện&rdquo;
+                </span>
+                <input
+                  type="checkbox"
+                  checked={overlaySettings.showXinXamPanel !== false}
+                  onChange={(e) =>
+                    onUpdateOverlaySettings({
+                      ...overlaySettings,
+                      showXinXamPanel: e.target.checked,
                     })
                   }
                   className="accent-[#d4af37]"

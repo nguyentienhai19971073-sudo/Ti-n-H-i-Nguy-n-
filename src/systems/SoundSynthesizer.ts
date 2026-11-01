@@ -344,6 +344,65 @@ class TempleSoundSynthesizer {
     }
   }
   /**
+   * Authentic hollow bamboo fortune-stick rattle (Tiếng Lắc Ống Xăm Tre)
+   */
+  public playBambooShake(volume = 0.56, rattleIndex = 0): void {
+    if (!this.ctx || !this.unlocked || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    const baseFreq = 920 + ((rattleIndex * 73) % 240);
+
+    for (let k = 0; k < 2; k++) {
+      const t0 = now + k * 0.036;
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(baseFreq * (1 + k * 0.24), t0);
+      osc.frequency.exponentialRampToValueAtTime(480, t0 + 0.055);
+
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1180, t0);
+      filter.Q.setValueAtTime(4.2, t0);
+
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(0.18 * volume, t0 + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.075);
+
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(this.ctx.destination);
+
+      osc.start(t0);
+      osc.stop(t0 + 0.085);
+    }
+  }
+
+  /**
+   * Gentle sacred temple bell & crystal chime when a Xin Xăm fortune stick is revealed
+   */
+  public playXinXamRevealBell(volume = 0.72): void {
+    this.playTempleBell(volume * 0.72);
+    if (!this.ctx || !this.unlocked || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    const partials = [587.33, 880.0, 1174.66];
+    for (let i = 0; i < partials.length; i++) {
+      const t0 = now + 0.08 + i * 0.07;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(partials[i], t0);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(0.11 * volume, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0004, t0 + 2.3);
+      osc.connect(g);
+      g.connect(this.ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 2.35);
+    }
+  }
+
+  /**
    * Dynamic Gift Sound Effect Dispatcher (Data-driven from GiftMapping.soundEffect)
    */
   public playConfiguredGiftSound(sound: GiftSoundEffectType, volume = 0.78): void {

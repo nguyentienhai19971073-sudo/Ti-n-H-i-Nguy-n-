@@ -8,14 +8,30 @@ import {
   DEFAULT_GIFT_MAPPINGS,
   DEFAULT_OVERLAY_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
+  DEFAULT_XIN_XAM_SETTINGS,
+  DEFAULT_XIN_XAM_VOICE_TEMPLATE,
+  FORTUNE_CATEGORIES,
+  FORTUNE_CLASSIFICATION_META,
+  FortuneCategory,
+  buildSortedOfferingItems,
   containsForbiddenGiftWords,
+  formatFortuneCode,
+  formatQueXamHeader,
   renderCeremonialSubtitle,
   renderGiftVoiceTemplate,
+  renderXinXamVoiceText,
   sanitizeCeremonialText,
+  vietnameseNumberToWords,
 } from '../types/temple';
 import {
+  ALTAR_STATIONS,
+  BUDDHA_ELEVATION_Y,
+  BUDDHA_STATUE_SCALE,
   COL_SPACING_X,
+  FIRST_ROW_Z,
   INNER_MAT_X,
+  MAIN_SEAT_COLS_PER_SIDE,
+  MAIN_SEAT_ROWS,
   ROW_SPACING_Z,
   TOTAL_MAIN_MATS,
   configureTempleCamera,
@@ -36,12 +52,15 @@ import {
   voiceManager,
 } from '../systems/VoiceManager';
 import { TikTokEventManager } from '../systems/TikTokEventManager';
+import { DEFAULT_100_FORTUNES } from '../data/fortunes100';
+import { xinXamRegistry } from '../systems/XinXamRegistry';
 import {
   buildBurgundyHeaderStyle,
   buildBurgundyPanelStyle,
   buildCenterCeremonialPanelStyle,
   buildCharacterNameLabelStyle,
   buildCommentBubbleStyle,
+  buildXinXamResultPanelStyle,
 } from '../systems/OverlayTheme';
 
 function runTest(name: string, fn: () => void): void {
@@ -673,10 +692,11 @@ runTest('8. Increased seat spacing, symmetrical aisles & 9:16 Buddha/seat camera
 // ============================================================================
 // 9. TRANSPARENT RGBA PANEL RENDERING & ZERO PUBLIC AVATARS
 // ============================================================================
-runTest('9. RGBA 0.50–0.60 panel styling (no parent opacity) & zero avatars in public UI', () => {
-  assert.ok(
-    DEFAULT_OVERLAY_SETTINGS.panelOpacity >= 0.5 && DEFAULT_OVERLAY_SETTINGS.panelOpacity <= 0.6,
-    `Default panelOpacity (${DEFAULT_OVERLAY_SETTINGS.panelOpacity}) must be in [0.50, 0.60]`,
+runTest('9. RGBA 0.45 default panel styling (no parent opacity) & zero avatars in public scene UI', () => {
+  assert.equal(
+    DEFAULT_OVERLAY_SETTINGS.panelOpacity,
+    0.45,
+    `Default panelOpacity (${DEFAULT_OVERLAY_SETTINGS.panelOpacity}) must be 0.45`,
   );
 
   const stylesToVerify = [
@@ -978,5 +998,549 @@ runTest('11. Non-overlapping Center Panel queue, Lotus bursts & Major > Normal >
   mgr.clearParticipants(true);
 });
 
-console.log('\n🎉 ALL 11 CHÙA ONLINE LIVESTREAM UPGRADE TESTS PASSED SUCCESSFULLY!');
+// ============================================================================
+// 12. ELEVATED BUDDHA POSITION (UNCHANGED SCALE) & EXPANDED 104 FOREGROUND SEATS
+// ============================================================================
+runTest('12. Elevated Buddha statue (unchanged 1.82 scale) & expanded 104-seat foreground congregation', () => {
+  // 1) Buddha scale MUST remain strictly 1.82 (never enlarged or stretched)
+  assert.equal(BUDDHA_STATUE_SCALE, 1.82, 'Buddha statue scale must remain strictly unchanged at 1.82');
+  assert.ok(BUDDHA_ELEVATION_Y >= 3.5, `Buddha statue raised vertically in 3D scene (y=${BUDDHA_ELEVATION_Y})`);
+
+  const altarSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/three/BuddhaAltar.tsx'),
+    'utf8',
+  );
+  assert.ok(
+    altarSrc.includes('BUDDHA_STATUE_SCALE') && altarSrc.includes('3.12 / maxDim'),
+    'BuddhaAltar.tsx preserves exact statue scale and GLTF normalization without enlarging',
+  );
+
+  // 2) Expanded foreground seating: 13 rows x 8 cols = 104 symmetrical mats extending near bottom edge
+  assert.equal(MAIN_SEAT_ROWS, 13, 'Expanded to 13 front-to-back rows');
+  assert.equal(MAIN_SEAT_COLS_PER_SIDE, 4, 'Expanded to 4 columns on each side of the red carpet');
+  assert.equal(TOTAL_MAIN_MATS, 104, '104 primary meditation mats available');
+  const frontRowZ = FIRST_ROW_Z + (MAIN_SEAT_ROWS - 1) * ROW_SPACING_Z;
+  assert.ok(frontRowZ >= 12.0, `Foreground seating reaches close to camera bottom edge (z=${frontRowZ})`);
+
+  // 3) Dedicated 3D Xin Xăm station near elevated altar, separate from central incense table
+  const xinXamStation = ALTAR_STATIONS.xin_xam_station;
+  const incenseStation = ALTAR_STATIONS.incense_center;
+  assert.ok(
+    Math.hypot(xinXamStation.x - incenseStation.x, xinXamStation.z - incenseStation.z) >= 2.5,
+    '3D Xin Xăm station is cleanly separated from central incense altar',
+  );
+
+  // 4) Verify elevated Buddha fits in upper background of 9:16 frame and never clips ceiling
+  const framing = verifyTempleFraming916(1080, 1920);
+  assert.equal(framing.buddhaFullyInsideFrame, true, 'Elevated Buddha + halo + lotus throne 100% inside 9:16 frame');
+  assert.equal(framing.allSeatsInsideFrame, true, 'All 104 expanded foreground mats fit inside 9:16 frame');
+  assert.ok(
+    framing.buddhaBottomNdcY > 0.03,
+    `Elevated Buddha positioned in upper background above screen midline (bottom NDC Y = ${framing.buddhaBottomNdcY.toFixed(3)})`,
+  );
+});
+
+// ============================================================================
+// 13. 100 UNIQUE VIETNAMESE FORTUNE STICKS (01–100) & UNIFORM RANDOM SELECTION
+// ============================================================================
+runTest('13. 100 unique Vietnamese fortune sticks (01–100), 5 classifications & uniform draw', () => {
+  xinXamRegistry.resetLocalForTests();
+  assert.equal(DEFAULT_100_FORTUNES.length, 100, 'Must provide exactly 100 default fortune sticks');
+  assert.deepEqual(
+    FORTUNE_CATEGORIES,
+    ['Đại Cát', 'Trung Cát', 'Tiểu Cát', 'Bình', 'Cần Thận Trọng'],
+    'Must support all 5 required fortune classifications',
+  );
+
+  const counts: Record<FortuneCategory, number> = {
+    'Đại Cát': 0,
+    'Trung Cát': 0,
+    'Tiểu Cát': 0,
+    Bình: 0,
+    'Cần Thận Trọng': 0,
+  };
+  const seenNumbers = new Set<number>();
+  const seenTitles = new Set<string>();
+
+  for (let i = 0; i < DEFAULT_100_FORTUNES.length; i++) {
+    const f = DEFAULT_100_FORTUNES[i];
+    assert.equal(f.fortuneNumber, i + 1, `Sequential fortune number ${i + 1}`);
+    assert.equal(f.fortuneCode, formatFortuneCode(i + 1), `Zero-padded code for ${i + 1}`);
+    assert.equal(seenNumbers.has(f.fortuneNumber), false);
+    assert.equal(seenTitles.has(f.title), false, `Unique fortune title required: ${f.title}`);
+    seenNumbers.add(f.fortuneNumber);
+    seenTitles.add(f.title);
+    counts[f.category] += 1;
+
+    // Verify canonical fields linked directly to each fortune card
+    assert.equal(f.fortuneType, f.category, 'fortuneType linked directly to card category');
+    assert.equal(f.fortuneTitle, f.title, 'fortuneTitle linked directly to card title');
+    assert.equal(f.shortVerse, f.poem, 'shortVerse linked directly to card poem');
+    assert.ok(f.shortVerse.length >= 16, `Fortune ${f.fortuneCode} must include shortVerse`);
+    assert.ok(f.interpretation.length >= 20, `Fortune ${f.fortuneCode} must include interpretation`);
+    assert.ok(f.advice.length >= 10, `Fortune ${f.fortuneCode} must include advice`);
+    assert.equal(
+      f.interpretation.includes('Nội dung xăm minh họa mang tính tham khảo'),
+      false,
+      'Must never contain banned disclaimer text',
+    );
+  }
+
+  assert.equal(counts['Đại Cát'], 15, '15 Đại Cát fortunes');
+  assert.equal(counts['Trung Cát'], 25, '25 Trung Cát fortunes');
+  assert.equal(counts['Tiểu Cát'], 20, '20 Tiểu Cát fortunes');
+  assert.equal(counts.Bình, 25, '25 Bình fortunes');
+  assert.equal(counts['Cần Thận Trọng'], 15, '15 Cần Thận Trọng fortunes');
+
+  // Verify Fortune #18 matches exact specification example card
+  const f18 = DEFAULT_100_FORTUNES.find((f) => f.fortuneNumber === 18)!;
+  assert.equal(f18.fortuneType, 'Trung Cát');
+  assert.equal(f18.fortuneTitle, 'Gia đạo an hòa');
+
+  // Verify disabled fortunes are excluded, enabled fortunes draw uniformly, and fortuneType NEVER drifts from card
+  const customSubset = DEFAULT_100_FORTUNES.map((f) => ({
+    ...f,
+    enabled: f.fortuneNumber === 7 || f.fortuneNumber === 18 || f.fortuneNumber === 88,
+  }));
+  xinXamRegistry.setFortunesLocal(customSubset);
+
+  const hitCounts: Record<number, number> = { 7: 0, 18: 0, 88: 0 };
+  for (let i = 0; i < 180; i++) {
+    const d = xinXamRegistry.drawFortune({
+      eventDedupeKey: `uniform-test-${i}`,
+      userId: 'u-test',
+      username: 'phattu.test',
+      isDemo: true,
+    });
+    assert.ok(d, 'Draw succeeded');
+    assert.ok(
+      d.fortuneNumber === 7 || d.fortuneNumber === 18 || d.fortuneNumber === 88,
+      `Disabled fortunes must never be selected (got ${d.fortuneNumber})`,
+    );
+    const sourceCard = customSubset.find((c) => c.fortuneNumber === d.fortuneNumber)!;
+    assert.equal(
+      d.fortuneType,
+      sourceCard.fortuneType,
+      'Drawn fortuneType must come from the selected fortune card, never randomized separately',
+    );
+    hitCounts[d.fortuneNumber] += 1;
+  }
+  assert.ok(hitCounts[7] > 25 && hitCounts[18] > 25 && hitCounts[88] > 25, 'Uniform selection across enabled sticks');
+  xinXamRegistry.resetLocalForTests();
+});
+
+// ============================================================================
+// 14. XIN XĂM GIFT ID TRIGGER RULES & DEDUPLICATION (NO INVENTED GIFT ID!)
+// ============================================================================
+runTest('14. Xin Xăm Gift ID rules: never invent Gift ID, never trigger on 20 coins alone, deduplicate draws', () => {
+  xinXamRegistry.resetLocalForTests();
+  const mgr = new TikTokEventManager();
+  mgr.clearParticipants(true);
+  voiceManager.stopAndClearQueue();
+
+  // 1) Default Gift ID MUST be empty ("") — never invented!
+  assert.equal(DEFAULT_XIN_XAM_SETTINGS.giftId, '', 'Default Xin Xăm Gift ID must be empty until admin configures real ID');
+
+  // 2) Sending an unmapped 20-coin gift when giftId is "" MUST NOT trigger Xin Xăm
+  mgr.processEvent({
+    eventId: 'ev-unconfigured-20coin',
+    type: 'gift',
+    userId: 'u-viewer-1',
+    username: 'viewer.20xu',
+    nickname: 'Viewer 20',
+    giftId: '999999',
+    giftName: 'TwentyCoinGift',
+    giftCount: 1,
+    diamondCount: 20,
+    isDemo: true,
+    timestamp: Date.now(),
+  });
+  assert.equal(
+    xinXamRegistry.getSnapshot().recentDraws.length,
+    0,
+    '20-coin gift must NEVER trigger Xin Xăm when Gift ID is not configured',
+  );
+
+  // 3) Admin configures actual TikTok Gift ID '778899' -> matching gift triggers Xin Xăm once!
+  xinXamRegistry.setSettingsLocal({ enabled: true, giftId: '778899', meritPoints: 200 });
+  const streakKey = 'u-viewer-2:778899:streak1';
+
+  mgr.processEvent({
+    eventId: 'ev-xinxam-real-1',
+    streakKey,
+    type: 'gift',
+    userId: 'u-viewer-2',
+    username: 'minh.anh',
+    nickname: 'Minh Anh',
+    avatarUrl: 'https://example.com/minhanh.jpg',
+    giftId: '778899',
+    giftName: 'FortuneStickGift',
+    giftCount: 1,
+    totalStreakCount: 1,
+    giftType: 1,
+    repeatEnd: false,
+    diamondCount: 20,
+    isDemo: true,
+    timestamp: Date.now(),
+  });
+
+  assert.equal(xinXamRegistry.getSnapshot().recentDraws.length, 1, 'Configured Gift ID triggers 1 fortune draw');
+  const firstDraw = xinXamRegistry.getSnapshot().recentDraws[0];
+
+  // Streak completion packet with same streakKey MUST NOT draw a second fortune!
+  mgr.processEvent({
+    eventId: 'ev-xinxam-real-1-end',
+    streakKey,
+    type: 'gift',
+    userId: 'u-viewer-2',
+    username: 'minh.anh',
+    nickname: 'Minh Anh',
+    giftId: '778899',
+    giftName: 'FortuneStickGift',
+    giftCount: 0,
+    totalStreakCount: 1,
+    giftType: 1,
+    repeatEnd: true,
+    diamondCount: 20,
+    isDemo: true,
+    timestamp: Date.now() + 200,
+  });
+  assert.equal(
+    xinXamRegistry.getSnapshot().recentDraws.length,
+    1,
+    'Streak completion packet must not trigger a duplicate fortune draw',
+  );
+
+  // Re-drawing with the same eventDedupeKey returns the exact persisted fortune
+  const repeatDraw = xinXamRegistry.drawFortune({
+    eventDedupeKey: firstDraw.eventDedupeKey,
+    userId: 'u-viewer-2',
+    username: 'minh.anh',
+  });
+  assert.equal(repeatDraw?.fortuneNumber, firstDraw.fortuneNumber, 'Dedupe key returns exact stored fortune');
+
+  mgr.clearParticipants(true);
+  xinXamRegistry.resetLocalForTests();
+});
+
+// ============================================================================
+// 15. MULTI-USER 3D XIN XĂM QUEUE, SEAT RESERVATION & 120s TIMEOUT DEFERRAL
+// ============================================================================
+runTest('15. Multi-user 3D Xin Xăm queue, seat reservation, stick reveal & 120s timeout safety', () => {
+  xinXamRegistry.resetLocalForTests();
+  const mgr = new TikTokEventManager();
+  mgr.clearParticipants(true);
+  voiceManager.stopAndClearQueue();
+  voiceManager.updateSettings({
+    ...DEFAULT_VOICE_SETTINGS,
+    autoNarrationEnabled: true,
+    giftAnnouncementsEnabled: true,
+  });
+
+  const now = Date.now();
+  // Trigger 2 simultaneous Xin Xăm requests
+  const drawA = mgr.triggerXinXamForUser({
+    userId: 'u-xam-a',
+    username: 'phattu.an',
+    nickname: 'Phật Tử An',
+    avatarUrl: 'https://example.com/an.png',
+    forcedFortuneNumber: 18,
+    isDemo: true,
+    now,
+  });
+  const drawB = mgr.triggerXinXamForUser({
+    userId: 'u-xam-b',
+    username: 'phattu.binh',
+    nickname: 'Phật Tử Bình',
+    forcedFortuneNumber: 9,
+    isDemo: true,
+    now: now + 10,
+  });
+
+  assert.equal(drawA?.fortuneNumber, 18);
+  assert.equal(drawB?.fortuneNumber, 9);
+
+  const snap1 = mgr.getSnapshot();
+  const charA = snap1.participants.find((p) => p.userId === 'u-xam-a')!;
+  const charB = snap1.participants.find((p) => p.userId === 'u-xam-b')!;
+  const reservedSeatA = charA.seatIndex;
+  const reservedSeatB = charB.seatIndex;
+
+  assert.notEqual(reservedSeatA, reservedSeatB, 'Each participant keeps a unique reserved seat');
+  assert.equal(charA.activeRitual?.stationId, 'xin_xam_station', 'User A occupies 3D Xin Xăm station');
+  assert.equal(charB.activeRitual, null, 'User B waits politely at their seat while station is busy');
+  assert.equal(snap1.queuedAltarCount, 1, 'User B queued in Xin Xăm ritual queue');
+
+  // Simulate User A arriving at station -> shaking bamboo tube -> stick falling out (reveal!)
+  const ritualIdA = charA.activeRitual!.id;
+  mgr.notifyAltarRitualArrived('u-xam-a', ritualIdA);
+  mgr.notifyXinXamStickRevealed('u-xam-a', ritualIdA);
+
+  const snapReveal = mgr.getSnapshot();
+  assert.equal(snapReveal.activeXinXamResult?.fortuneNumber, 18, 'Center Xin Xăm Result Panel activated on stick reveal');
+  assert.equal(snapReveal.activeXinXamResult?.username, 'phattu.an');
+  assert.ok(snapReveal.activeLotusBursts.length >= 1, 'Pink lotus & golden burst emitted');
+
+  // Force User A past 120s inactivity WHILE still performing Xin Xăm -> must NOT be removed mid-ritual!
+  const internalMap = (mgr as unknown as { participantsMap: Map<string, { lastInteractionAt: number }> }).participantsMap;
+  internalMap.get('u-xam-a')!.lastInteractionAt = Date.now() - 150_000;
+  const sweptMidRitual = mgr.sweepInactiveParticipants(Date.now());
+  assert.equal(sweptMidRitual, 0, 'Active Xin Xăm participant must never be removed mid-ritual');
+
+  // Complete User A's Xin Xăm ritual -> User A returns to reserved seat (or departs cleanly now), and User B immediately starts walking to Xin Xăm station!
+  mgr.completeCharacterRitual('u-xam-a', ritualIdA);
+  const snapAfterA = mgr.getSnapshot();
+  const charBAfter = snapAfterA.participants.find((p) => p.userId === 'u-xam-b')!;
+  assert.equal(charBAfter.seatIndex, reservedSeatB, 'User B reserved seat preserved');
+  assert.equal(charBAfter.activeRitual?.stationId, 'xin_xam_station', 'Queued User B promoted to 3D Xin Xăm station');
+
+  voiceManager.stopAndClearQueue();
+  mgr.clearParticipants(true);
+  xinXamRegistry.resetLocalForTests();
+});
+
+// ============================================================================
+// 16. CENTER FORTUNE RESULT PANEL ("🪷 KẾT QUẢ XIN XĂM"), 0.45 RGBA & 5 TYPE ACCENTS
+// ============================================================================
+runTest('16. "🪷 KẾT QUẢ XIN XĂM" panel, 5 classification accents, 0.45 RGBA opacity & zero disclaimers', () => {
+  assert.equal(DEFAULT_OVERLAY_SETTINGS.panelOpacity, 0.45, 'Global livestream panel default RGBA opacity is 0.45');
+  assert.equal(DEFAULT_XIN_XAM_SETTINGS.panelOpacity, 0.45, 'Xin Xăm result panel default RGBA opacity is 0.45');
+
+  // Single-line header formatting check
+  assert.equal(formatQueXamHeader(18), 'QUẺ XĂM 18');
+  assert.equal(formatQueXamHeader(1), 'QUẺ XĂM 01');
+  assert.equal(formatQueXamHeader(100), 'QUẺ XĂM 100');
+  assert.equal(formatQueXamHeader(18).includes('\n'), false, '"QUẺ XĂM" and number must stay on one single line');
+
+  for (const cat of FORTUNE_CATEGORIES) {
+    const st = buildXinXamResultPanelStyle(0.45, cat);
+    assert.equal(st.opacity, undefined, 'Never set container CSS opacity');
+    assert.ok(String(st.backgroundImage || '').includes('rgba('), `Uses RGBA background for ${cat}`);
+    assert.ok(FORTUNE_CLASSIFICATION_META[cat].upperLabel.length >= 4);
+  }
+
+  const resultPanelSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/ui/XinXamResultPanel.tsx'),
+    'utf8',
+  );
+  assert.ok(resultPanelSrc.includes('🪷 KẾT QUẢ XIN XĂM'), 'Displays required title "🪷 KẾT QUẢ XIN XĂM"');
+  assert.ok(
+    resultPanelSrc.includes('xinxam-fortune-classification'),
+    'Displays prominent fortune classification badge',
+  );
+  assert.ok(
+    resultPanelSrc.includes('cleanVerse') && resultPanelSrc.includes('cleanAdvice'),
+    'Displays shortVerse and advice in result panel',
+  );
+  assert.ok(
+    resultPanelSrc.includes('whitespace-nowrap') && resultPanelSrc.includes('formatQueXamHeader'),
+    'Enforces single-line non-wrapping QUẺ XĂM <number>',
+  );
+
+  // Verify banned disclaimer and forbidden gift words never appear in public livestream UI components
+  const publicStreamFiles = [
+    'src/components/ui/XinXamResultPanel.tsx',
+    'src/components/ui/BuddhistGiftPanel.tsx',
+    'src/components/ui/Leaderboard.tsx',
+    'src/components/ui/CenterCeremonialPanel.tsx',
+    'src/components/ui/StreamingOverlay.tsx',
+  ];
+  for (const relPath of publicStreamFiles) {
+    const content = fs.readFileSync(path.resolve(process.cwd(), relPath), 'utf8');
+    assert.equal(
+      content.includes('Nội dung xăm minh họa mang tính tham khảo'),
+      false,
+      `${relPath} must NEVER contain banned disclaimer`,
+    );
+    assert.equal(content.includes('Tặng quà'), false, `${relPath} must NEVER mention "Tặng quà" publicly`);
+    assert.equal(content.includes('Quà tặng'), false, `${relPath} must NEVER mention "Quà tặng" publicly`);
+  }
+});
+
+// ============================================================================
+// 17. VIENEU VOICE READS FORTUNE CLASSIFICATION + CENTRALIZED VOICE PRIORITY
+// ============================================================================
+runTest('17. VieNeuTTS reads fortuneType verbatim & Large Gift > Xin Xăm > Normal Gift > Comment priority', () => {
+  assert.equal(vietnameseNumberToWords(1), 'một');
+  assert.equal(vietnameseNumberToWords(5), 'năm');
+  assert.equal(vietnameseNumberToWords(10), 'mười');
+  assert.equal(vietnameseNumberToWords(15), 'mười lăm');
+  assert.equal(vietnameseNumberToWords(18), 'mười tám');
+  assert.equal(vietnameseNumberToWords(20), 'hai mươi');
+  assert.equal(vietnameseNumberToWords(21), 'hai mươi mốt');
+  assert.equal(vietnameseNumberToWords(24), 'hai mươi tư');
+  assert.equal(vietnameseNumberToWords(25), 'hai mươi lăm');
+  assert.equal(vietnameseNumberToWords(100), 'một trăm');
+
+  // Exact required example from user specification (Fortune #18, Minh Anh):
+  const f18 = DEFAULT_100_FORTUNES.find((f) => f.fortuneNumber === 18)!;
+  const spoken18 = renderXinXamVoiceText(DEFAULT_XIN_XAM_VOICE_TEMPLATE, {
+    username: 'Minh Anh',
+    fortuneNumber: f18.fortuneNumber,
+    fortuneType: f18.fortuneType,
+    fortuneTitle: f18.fortuneTitle,
+    fortuneInterpretation: f18.interpretation,
+    fortuneAdvice: f18.advice,
+  });
+  assert.equal(
+    spoken18,
+    'Phật tử Minh Anh xin được xăm số mười tám, thuộc loại Trung Cát. Gia đạo an hòa. Gia đình có thể đón nhận những điều thuận lợi khi mọi người biết quan tâm và chia sẻ. Hãy giữ lòng từ bi và sống hòa thuận.',
+  );
+  assert.equal(containsForbiddenGiftWords(spoken18), false);
+
+  // Verify fortune classification is NEVER skipped even if a custom template omits {fortuneType}
+  const legacyCustomSpoken = renderXinXamVoiceText(
+    'Phật tử {username} xin được xăm số {fortuneNumber}. {fortuneTitle}.',
+    {
+      username: 'Hoàng Nam',
+      fortuneNumber: 12,
+      fortuneType: 'Tiểu Cát',
+      fortuneTitle: 'Lộc Nhỏ Đầu Xuân',
+      fortuneInterpretation: 'Có tin vui nhỏ.',
+      fortuneAdvice: 'Giữ lòng chân thành.',
+    },
+  );
+  assert.ok(
+    legacyCustomSpoken.includes('Tiểu Cát'),
+    `Voice narration must NEVER skip fortuneType (got: ${legacyCustomSpoken})`,
+  );
+
+  // Verify strict centralized VoiceManager priority:
+  // LARGE_GIFT (1) > XIN_XAM (2) > NORMAL_GIFT (3) > SPECIAL_RITUAL (4) > PRAYER_COMMENT (5) > ORDINARY_COMMENT (6)
+  const vm = new SmartVoiceManager();
+  vm.updateSettings({
+    ...DEFAULT_VOICE_SETTINGS,
+    autoNarrationEnabled: true,
+    commentCooldownSec: 0,
+  });
+
+  vm.enqueue({
+    text: 'Đang phát câu mở đầu.',
+    priority: AnnouncementPriority.LARGE_GIFT,
+    category: 'large_gift',
+    dedupeKey: 'p-init',
+  });
+
+  vm.enqueue({
+    text: 'Phật tử Nam gửi lời nguyện: Nam mô A Di Đà Phật',
+    priority: AnnouncementPriority.ORDINARY_COMMENT,
+    category: 'ordinary_comment',
+    dedupeKey: 'p-ordinary',
+  });
+  vm.enqueue({
+    text: 'Phật tử Lan gửi lời nguyện: Con cầu cho mẹ mạnh khỏe',
+    priority: AnnouncementPriority.PRAYER_COMMENT,
+    category: 'prayer_comment',
+    dedupeKey: 'p-prayer',
+  });
+  vm.enqueue({
+    text: 'Phật tử Tâm thắp hương cầu an.',
+    priority: AnnouncementPriority.SPECIAL_RITUAL,
+    category: 'special_ritual',
+    dedupeKey: 'p-ritual',
+  });
+  vm.enqueue({
+    text: 'Phật tử Bình cầu bình an.',
+    priority: AnnouncementPriority.NORMAL_GIFT,
+    category: 'gift',
+    dedupeKey: 'p-normal',
+  });
+  vm.enqueue({
+    text: spoken18,
+    priority: AnnouncementPriority.XIN_XAM,
+    category: 'xin_xam',
+    dedupeKey: 'p-xinxam',
+  });
+  vm.enqueue({
+    text: 'Phật tử Đức cầu công đức. Kính chúc gia đình luôn an lành.',
+    priority: AnnouncementPriority.LARGE_GIFT,
+    category: 'large_gift',
+    dedupeKey: 'p-large',
+  });
+
+  assert.deepEqual(
+    vm.getQueueSnapshot().map((i) => i.dedupeKey),
+    ['p-large', 'p-xinxam', 'p-normal', 'p-ritual', 'p-prayer', 'p-ordinary'],
+    'Voice queue strictly ordered: Large Gift > Xin Xăm > Normal Gift > Special Ritual > Prayer Comment > Ordinary Comment',
+  );
+
+  vm.stopAndClearQueue();
+});
+
+// ============================================================================
+// 18. UNIFIED "CÚNG DƯỜNG CẦU AN" ASCENDING COIN SORTING, ZERO TRUNCATION & KNEELING ORIENTATION
+// ============================================================================
+runTest('18. Unified "CÚNG DƯỜNG CẦU AN" ascending coin order, zero truncation & Buddha-facing kneeling', () => {
+  // 1) Default offering items include XIN XĂM (20 xu) sorted strictly ascending: 1, 10, 20, 30, 99, 199
+  const sortedDefault = buildSortedOfferingItems(DEFAULT_GIFT_MAPPINGS, DEFAULT_XIN_XAM_SETTINGS);
+  assert.equal(sortedDefault.length, 6, 'Includes 5 default gifts + XIN XĂM inside CÚNG DƯỜNG CẦU AN');
+  assert.deepEqual(
+    sortedDefault.map((i) => ({
+      title: i.ceremonyTitle,
+      label: i.vietnameseLabel,
+      coins: i.referenceCoins,
+    })),
+    [
+      { title: 'CẦU BÌNH AN', label: 'Hoa Hồng', coins: 1 },
+      { title: 'CẦU SỨC KHỎE', label: 'Chuông Đồng', coins: 10 },
+      { title: 'XIN XĂM', label: 'Xin xăm cầu an', coins: 20 },
+      { title: 'CẦU GIA ĐẠO', label: 'Mâm Quả', coins: 30 },
+      { title: 'CẦU TÀI LỘC', label: 'Đài Sen', coins: 99 },
+      { title: 'CẦU CÔNG ĐỨC', label: 'Bảo Tháp', coins: 199 },
+    ],
+    'Default CÚNG DƯỜNG CẦU AN items must match exact ascending coin order',
+  );
+
+  // 2) Editing coin values or adding a new gift dynamically re-sorts from lowest to highest coin value
+  const withAddedGift = [
+    ...DEFAULT_GIFT_MAPPINGS,
+    {
+      ...DEFAULT_GIFT_MAPPINGS[0],
+      id: 'custom_incense_15',
+      giftId: '77777',
+      ceremonyTitle: 'DÂNG HƯƠNG TỊNH TÂM',
+      vietnameseLabel: 'Nén Tâm Hương Trầm',
+      referenceCoins: 15,
+    },
+  ];
+  const resorted = buildSortedOfferingItems(withAddedGift, {
+    ...DEFAULT_XIN_XAM_SETTINGS,
+    referenceCoins: 50,
+  });
+  assert.deepEqual(
+    resorted.map((i) => i.referenceCoins),
+    [1, 10, 15, 30, 50, 99, 199],
+    'Adding a 15-xu gift and changing XIN XĂM to 50 xu automatically re-sorts ascending',
+  );
+
+  // 3) Static check on BuddhistGiftPanel.tsx: ZERO text truncation / ellipsis / line-clamp, complete coin display
+  const giftPanelSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/ui/BuddhistGiftPanel.tsx'),
+    'utf8',
+  );
+  assert.equal(giftPanelSrc.includes('truncate'), false, 'BuddhistGiftPanel must NEVER use truncate');
+  assert.equal(giftPanelSrc.includes('text-ellipsis'), false, 'BuddhistGiftPanel must NEVER use text-ellipsis');
+  assert.equal(giftPanelSrc.includes('line-clamp'), false, 'BuddhistGiftPanel must NEVER use line-clamp');
+  assert.ok(
+    giftPanelSrc.includes('whitespace-normal') && giftPanelSrc.includes('break-words'),
+    'BuddhistGiftPanel allows clean natural multi-line text wrapping',
+  );
+  assert.ok(giftPanelSrc.includes('xu'), 'BuddhistGiftPanel displays coin values (... xu) clearly');
+
+  // 4) Verify 3D Xin Xăm station kneels facing directly toward the elevated Golden Buddha at (0, Y, -13.22)
+  const st = ALTAR_STATIONS.xin_xam_station;
+  const faceDirX = Math.sin(st.faceRotY);
+  const faceDirZ = Math.cos(st.faceRotY);
+  const toBuddhaX = 0 - st.x;
+  const toBuddhaZ = -13.22 - st.z;
+  const toBuddhaLen = Math.hypot(toBuddhaX, toBuddhaZ);
+  const dot = (faceDirX * toBuddhaX + faceDirZ * toBuddhaZ) / toBuddhaLen;
+  assert.ok(
+    dot > 0.96,
+    `Kneeling character at xin_xam_station must face toward the elevated Buddha statue (dot=${dot.toFixed(3)})`,
+  );
+});
+
+console.log('\n🎉 ALL 18 CHÙA ONLINE LIVESTREAM & XIN XĂM UPGRADE TESTS PASSED SUCCESSFULLY!');
+
 

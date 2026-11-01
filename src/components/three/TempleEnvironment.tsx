@@ -13,13 +13,13 @@ interface TempleEnvironmentProps {
   quality: QualityPreset;
 }
 
-const PILLAR_Z_POSITIONS = [-10.5, -6.0, -1.5, 3.0, 7.5, 12.0, 16.5];
-// Symmetrical side chandeliers flanking the sanctuary aisles (|x| = 5.15 keeps center 100% unobstructed!)
+const PILLAR_Z_POSITIONS = [-10.5, -6.0, -1.5, 3.0, 7.5, 12.0, 16.5, 21.0];
+// Symmetrical side chandeliers flanking the wider sanctuary aisles (|x| = 5.55, y = 13.6 keeps center & raised Buddha 100% unobstructed!)
 const CHANDELIER_COORDS: [number, number, number][] = [
-  [-5.15, 11.1, -5.2],
-  [5.15, 11.1, -5.2],
-  [-5.15, 11.1, 3.2],
-  [5.15, 11.1, 3.2],
+  [-5.55, 13.6, -5.2],
+  [5.55, 13.6, -5.2],
+  [-5.55, 13.6, 3.8],
+  [5.55, 13.6, 3.8],
 ];
 
 export function TempleEnvironment({ quality }: TempleEnvironmentProps) {
@@ -143,15 +143,15 @@ export function TempleEnvironment({ quality }: TempleEnvironmentProps) {
 
   return (
     <group>
-      {/* Main Polished Temple Tile Floor */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 3]} receiveShadow>
-        <planeGeometry args={[28, 46]} />
+      {/* Main Polished Temple Tile Floor (extended for expanded front rows) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 4.5]} receiveShadow>
+        <planeGeometry args={[30, 52]} />
         <meshStandardMaterial map={floorTex} roughness={0.42} metalness={0.12} />
       </mesh>
 
-      {/* Long Deep-Red Ceremonial Carpet stretching from Entrance directly to the Altar */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 3.6]} receiveShadow>
-        <planeGeometry args={[2.48, 27.6]} />
+      {/* Long Deep-Red Ceremonial Carpet stretching from Expanded Entrance directly to the Stepped Altar */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 4.6]} receiveShadow>
+        <planeGeometry args={[2.48, 30.8]} />
         <meshStandardMaterial
           map={carpetTex}
           roughness={0.76}
@@ -234,19 +234,19 @@ export function TempleEnvironment({ quality }: TempleEnvironmentProps) {
               <mesh position={[0, 0.5, 0]} material={goldAccentMat}>
                 <torusGeometry args={[0.46, 0.04, 8, 18]} />
               </mesh>
-              <mesh position={[0, 7.1, 0]} material={darkPillarMat} castShadow>
-                <cylinderGeometry args={[0.35, 0.4, 13.6, 18]} />
+              <mesh position={[0, 8.7, 0]} material={darkPillarMat} castShadow>
+                <cylinderGeometry args={[0.35, 0.4, 16.8, 18]} />
               </mesh>
               {/* Carved Golden & Pink Lotus Pillar Medallion */}
-              <mesh position={[0, 10.8, 0]} material={goldAccentMat}>
+              <mesh position={[0, 13.4, 0]} material={goldAccentMat}>
                 <torusGeometry args={[0.38, 0.048, 8, 20]} />
               </mesh>
-              <mesh position={[0, 10.62, 0]} material={lotusOrnamentMat}>
+              <mesh position={[0, 13.22, 0]} material={lotusOrnamentMat}>
                 <cylinderGeometry args={[0.42, 0.36, 0.14, 10]} />
               </mesh>
 
               {/* Hanging Traditional Hexagonal Red-and-Gold Lantern */}
-              <group position={[sideIdx === 0 ? 1.05 : -1.05, 8.8, 0]}>
+              <group position={[sideIdx === 0 ? 1.05 : -1.05, 10.6, 0]}>
                 <mesh
                   position={[sideIdx === 0 ? -0.5 : 0.5, 0.55, 0]}
                   rotation={[0, 0, Math.PI / 2]}
@@ -274,15 +274,15 @@ export function TempleEnvironment({ quality }: TempleEnvironmentProps) {
             </group>
           ))}
 
-          {/* High Vaulted Roof Beam (Vì Kèo Thượng Điện — raised to y = 14.0 above camera sightline!) */}
-          <mesh position={[0, 14.0, 0]} material={darkPillarMat}>
-            <boxGeometry args={[18.6, 0.42, 0.38]} />
+          {/* High Vaulted Roof Beam (Vì Kèo Thượng Điện — raised cleanly to y = 17.3 above elevated Buddha halo y = 14.92!) */}
+          <mesh position={[0, 17.3, 0]} material={darkPillarMat}>
+            <boxGeometry args={[19.2, 0.44, 0.4]} />
           </mesh>
         </group>
       ))}
 
-      {/* High Flanking Ceremonial Gilded Brackets (Cửa Võng Vàng 2 Bên — Open Center Archway!) */}
-      <group position={[0, 13.4, -7.8]}>
+      {/* High Flanking Ceremonial Gilded Brackets (Cửa Võng Vàng 2 Bên — Open Center Archway at y = 16.7!) */}
+      <group position={[0, 16.7, -7.8]}>
         <mesh position={[0, 0.55, 0]} material={goldAccentMat}>
           <boxGeometry args={[15.2, 0.42, 0.18]} />
         </mesh>
@@ -294,45 +294,45 @@ export function TempleEnvironment({ quality }: TempleEnvironmentProps) {
         </mesh>
       </group>
 
-      {/* Side Temple Walls & Vaulted Ceiling */}
-      <mesh position={[-10.2, 7.2, 3]} material={darkPillarMat}>
-        <boxGeometry args={[0.45, 14.6, 44]} />
+      {/* Side Temple Walls & Vaulted Ceiling (raised to y = 17.7 so nothing intersects elevated Buddha!) */}
+      <mesh position={[-10.4, 8.9, 4.5]} material={darkPillarMat}>
+        <boxGeometry args={[0.45, 17.8, 52]} />
       </mesh>
-      <mesh position={[10.2, 7.2, 3]} material={darkPillarMat}>
-        <boxGeometry args={[0.45, 14.6, 44]} />
+      <mesh position={[10.4, 8.9, 4.5]} material={darkPillarMat}>
+        <boxGeometry args={[0.45, 17.8, 52]} />
       </mesh>
-      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 14.4, 3]} material={darkPillarMat}>
-        <planeGeometry args={[22, 46]} />
+      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 17.7, 4.5]} material={darkPillarMat}>
+        <planeGeometry args={[22, 52]} />
       </mesh>
 
       {/* Warm Chandelier & Sanctuary Fill Lights */}
       <pointLight
-        position={[-5.15, 9.8, -5.2]}
+        position={[-5.55, 11.8, -5.2]}
         color="#ffc266"
-        intensity={6.4}
-        distance={20}
+        intensity={6.8}
+        distance={22}
+        decay={1.55}
+      />
+      <pointLight
+        position={[5.55, 11.8, -5.2]}
+        color="#ffc266"
+        intensity={6.8}
+        distance={22}
+        decay={1.55}
+      />
+      <pointLight
+        position={[-5.55, 10.6, 5.8]}
+        color="#ffb34d"
+        intensity={5.4}
+        distance={21}
         decay={1.6}
       />
       <pointLight
-        position={[5.15, 9.8, -5.2]}
-        color="#ffc266"
-        intensity={6.4}
-        distance={20}
+        position={[5.55, 10.6, 5.8]}
+        color="#ffb34d"
+        intensity={5.4}
+        distance={21}
         decay={1.6}
-      />
-      <pointLight
-        position={[-5.15, 9.5, 4.5]}
-        color="#ffb34d"
-        intensity={5.0}
-        distance={19}
-        decay={1.65}
-      />
-      <pointLight
-        position={[5.15, 9.5, 4.5]}
-        color="#ffb34d"
-        intensity={5.0}
-        distance={19}
-        decay={1.65}
       />
 
       {/* Gentle Floating Golden Temple Particles */}

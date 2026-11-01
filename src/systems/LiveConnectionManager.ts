@@ -1,11 +1,14 @@
 import { io, Socket } from 'socket.io-client';
 import {
   ConnectionStatus,
+  FortuneRecord,
   GiftActionPreset,
   GiftMapping,
   ServerConnectionSnapshot,
   TikTokNormalizedEvent,
   UnknownGiftRecord,
+  XinXamDrawResult,
+  XinXamSettings,
 } from '../types/temple';
 
 type EventSubscriber = (event: TikTokNormalizedEvent) => void;
@@ -16,6 +19,12 @@ type GiftsUpdatedSubscriber = (payload: {
   presets: GiftActionPreset[];
 }) => void;
 type UnknownGiftsSubscriber = (payload: { unknownGifts: UnknownGiftRecord[] }) => void;
+type XinXamUpdatedSubscriber = (payload: {
+  settings: XinXamSettings;
+  fortunes: FortuneRecord[];
+  recentDraws: XinXamDrawResult[];
+}) => void;
+type XinXamDrawSubscriber = (draw: XinXamDrawResult) => void;
 
 export class LiveConnectionManager {
   private socket: Socket | null = null;
@@ -40,6 +49,8 @@ export class LiveConnectionManager {
   private adminCmdSubscribers = new Set<AdminCmdSubscriber>();
   private giftsSubscribers = new Set<GiftsUpdatedSubscriber>();
   private unknownGiftsSubscribers = new Set<UnknownGiftsSubscriber>();
+  private xinXamSubscribers = new Set<XinXamUpdatedSubscriber>();
+  private xinXamDrawSubscribers = new Set<XinXamDrawSubscriber>();
 
   public init(): void {
     if (this.socket) return;
@@ -83,6 +94,29 @@ export class LiveConnectionManager {
       if (payload && Array.isArray(payload.unknownGifts)) {
         for (const sub of this.unknownGiftsSubscribers) {
           sub(payload);
+        }
+      }
+    });
+
+    socket.on(
+      'xinxam:updated',
+      (payload: {
+        settings: XinXamSettings;
+        fortunes: FortuneRecord[];
+        recentDraws: XinXamDrawResult[];
+      }) => {
+        if (payload && Array.isArray(payload.fortunes)) {
+          for (const sub of this.xinXamSubscribers) {
+            sub(payload);
+          }
+        }
+      },
+    );
+
+    socket.on('xinxam:draw_recorded', (draw: XinXamDrawResult) => {
+      if (draw && draw.eventDedupeKey) {
+        for (const sub of this.xinXamDrawSubscribers) {
+          sub(draw);
         }
       }
     });
@@ -135,6 +169,16 @@ export class LiveConnectionManager {
   public onUnknownGiftsUpdated(cb: UnknownGiftsSubscriber): () => void {
     this.unknownGiftsSubscribers.add(cb);
     return () => this.unknownGiftsSubscribers.delete(cb);
+  }
+
+  public onXinXamUpdated(cb: XinXamUpdatedSubscriber): () => void {
+    this.xinXamSubscribers.add(cb);
+    return () => this.xinXamSubscribers.delete(cb);
+  }
+
+  public onXinXamDrawRecorded(cb: XinXamDrawSubscriber): () => void {
+    this.xinXamDrawSubscribers.add(cb);
+    return () => this.xinXamDrawSubscribers.delete(cb);
   }
 
   public async connectTikTok(username: string): Promise<ServerConnectionSnapshot> {

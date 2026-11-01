@@ -19,33 +19,39 @@ export interface AltarStationSpec {
   faceRotY: number;
 }
 
-// Spacious 9:16-calibrated congregation seating:
-// 12 rows × 4 columns per side = 96 primary mats with generous horizontal (1.06m) & vertical (1.42m)
-// spacing so characters never overlap and have wide 0.82m walking aisles between rows.
-// Participants 97..300+ are stored in lightweight virtual/secondary sanctuary storage and seamlessly
+// Spacious 9:16-calibrated congregation seating expanded toward camera & left/right edges:
+// 13 rows × 4 columns per side = 104 primary mats with generous horizontal (1.12m) & vertical (1.54m)
+// spacing so characters never overlap and have wide 0.96m walking aisles between rows.
+// Participants 105..300+ are stored in lightweight virtual/secondary sanctuary storage and seamlessly
 // walk down the central red carpet when performing ceremonies or promote when seats open.
-export const MAIN_SEAT_ROWS = 12;
+export const MAIN_SEAT_ROWS = 13;
 export const MAIN_SEAT_COLS_PER_SIDE = 4;
 export const MAIN_SEATS_PER_ROW = MAIN_SEAT_COLS_PER_SIDE * 2; // 8 symmetrical seats per row
-export const TOTAL_MAIN_MATS = MAIN_SEAT_ROWS * MAIN_SEATS_PER_ROW; // 96 primary visible mats
+export const TOTAL_MAIN_MATS = MAIN_SEAT_ROWS * MAIN_SEATS_PER_ROW; // 104 primary visible mats
 
-export const ENTRANCE_Z = 14.8;
+export const ENTRANCE_Z = 16.8;
 export const ALTAR_CENTER_Z = -12.4;
-export const FIRST_ROW_Z = -6.4;
-export const ROW_SPACING_Z = 1.42; // Wide 1.42m row pitch -> 0.82m clear walking aisle between 0.60m mats
+export const FIRST_ROW_Z = -6.1;
+export const ROW_SPACING_Z = 1.54; // Wide 1.54m row pitch -> 0.96m clear walking aisle between 0.58m mats; front row reaches z = +12.38 near bottom of 9:16!
 export const INNER_MAT_X = 1.72; // Keeps central red carpet (|x| <= 1.24) completely clear
-export const COL_SPACING_X = 1.06; // Wide 1.06m column pitch -> 0.42m clear floor gap & 0.62m character gap
+export const COL_SPACING_X = 1.12; // Wide 1.12m column pitch -> columns at |x| = 1.72, 2.84, 3.96, 5.08 extending cleanly toward left/right edges
 
-// Canonical world-space bounds of the Golden Buddha Statue (head halo crown to lotus pedestal)
+// Exact preserved scale of the Golden Buddha Statue & Lotus Throne (NEVER enlarged or stretched!)
+export const BUDDHA_STATUE_SCALE = 1.82;
+export const BUDDHA_ELEVATION_Y = 3.88; // Raised vertically from 1.48 -> 3.88 atop stepped sanctuary platform
+
+// Canonical world-space bounds of the Raised Golden Buddha Statue (head halo crown to lotus pedestal)
+// Vertical span remains 11.04 world units (14.92 - 3.88 === 12.52 - 1.48) — 0% size change!
 export const SANCTUARY_BUDDHA_BOUNDS = {
   centerX: 0,
   centerZ: ALTAR_CENTER_Z - 0.82, // -13.22
-  pedestalBottomY: 1.48,
-  haloTopY: 12.52,
+  pedestalBottomY: BUDDHA_ELEVATION_Y, // 3.88
+  haloTopY: BUDDHA_ELEVATION_Y + 11.04, // 14.92
   halfWidthX: 3.35,
+  scale: BUDDHA_STATUE_SCALE,
 };
 
-// Dedicated collision-safe ritual stations in front of the Buddha Altar & Sanctuary
+// Dedicated collision-safe ritual stations in front of the elevated Buddha Altar & Xin Xăm Stand
 export const ALTAR_STATIONS: Record<AltarStationId, AltarStationSpec> = {
   incense_center: { id: 'incense_center', x: 0.0, z: -8.68, faceRotY: Math.PI },
   incense_left: { id: 'incense_left', x: -0.68, z: -8.68, faceRotY: Math.PI },
@@ -60,6 +66,8 @@ export const ALTAR_STATIONS: Record<AltarStationId, AltarStationSpec> = {
   lantern_right: { id: 'lantern_right', x: 2.54, z: -7.94, faceRotY: Math.PI },
   bell_right: { id: 'bell_right', x: 3.16, z: -9.24, faceRotY: Math.PI * 0.64 },
   grand_center: { id: 'grand_center', x: 0.0, z: -8.12, faceRotY: Math.PI },
+  // Dedicated separate 3D Xin Xăm ritual station on left side of sanctuary (never walks into Buddha!)
+  xin_xam_station: { id: 'xin_xam_station', x: -3.28, z: -8.92, faceRotY: Math.PI * 0.88 },
 };
 
 export function areAltarStationsTooClose(a: AltarStationId, b: AltarStationId): boolean {
@@ -74,6 +82,8 @@ export function getCandidateStationsForRitual(
   side: 'left' | 'right',
 ): AltarStationId[] {
   switch (type) {
+    case 'xin_xam':
+      return ['xin_xam_station'];
     case 'altar_incense':
     case 'altar_pray_clasped':
       return side === 'left'
@@ -126,10 +136,10 @@ function computeSeatPosition(seatIndex: number): SeatPosition {
     const depthFromCarpet = Math.floor(slotInRow / 2); // 0..3
     const col = side === 'left' ? depthFromCarpet : MAIN_SEAT_COLS_PER_SIDE + depthFromCarpet;
 
-    const absX = INNER_MAT_X + depthFromCarpet * COL_SPACING_X; // 1.72, 2.78, 3.84, 4.90
+    const absX = INNER_MAT_X + depthFromCarpet * COL_SPACING_X; // 1.72, 2.84, 3.96, 5.08
     const x = side === 'left' ? -absX : absX;
-    const z = FIRST_ROW_Z + row * ROW_SPACING_Z; // -6.40 .. +9.22
-    const aisleZ = z + 0.62; // Centered in the 0.82m walking corridor between rows
+    const z = FIRST_ROW_Z + row * ROW_SPACING_Z; // -6.10 .. +12.38
+    const aisleZ = z + 0.72; // Centered in the wide 0.96m walking corridor between rows
 
     return {
       seatIndex,
@@ -143,8 +153,8 @@ function computeSeatPosition(seatIndex: number): SeatPosition {
     };
   }
 
-  // Secondary virtual/rear sanctuary gallery for overflow participants (97..300+):
-  // Stored cleanly in lightweight virtual slots; if an overflow participant sends a gift/follow/share,
+  // Secondary virtual/rear sanctuary gallery for overflow participants (105..300+):
+  // Stored cleanly in lightweight virtual slots; if an overflow participant sends a gift/follow/share/Xin Xăm,
   // they enter cleanly from the rear sanctuary corridor and perform their full altar ceremony.
   const overflowOffset = seatIndex - TOTAL_MAIN_MATS;
   const overflowRow = Math.floor(overflowOffset / MAIN_SEATS_PER_ROW);
@@ -153,10 +163,10 @@ function computeSeatPosition(seatIndex: number): SeatPosition {
   const depthFromCarpet = Math.floor(slotInRow / 2); // 0..3
   const col = side === 'left' ? depthFromCarpet : MAIN_SEAT_COLS_PER_SIDE + depthFromCarpet;
 
-  const absX = INNER_MAT_X + depthFromCarpet * 0.92; // 1.72 .. 4.48
+  const absX = INNER_MAT_X + depthFromCarpet * 0.96; // 1.72 .. 4.60
   const x = side === 'left' ? -absX : absX;
-  const z = 11.1 + Math.min(4, overflowRow) * 0.78;
-  const aisleZ = z + 0.42;
+  const z = 14.1 + Math.min(4, overflowRow) * 0.82;
+  const aisleZ = z + 0.45;
 
   return {
     seatIndex,
@@ -170,7 +180,7 @@ function computeSeatPosition(seatIndex: number): SeatPosition {
   };
 }
 
-// Precompute all 96 main mats + 264 virtual overflow slots (supports 360 cached + unlimited dynamic)
+// Precompute all 104 main mats + 256 virtual overflow slots (supports 360 cached + unlimited dynamic)
 const PRECOMPUTED_SEATS: SeatPosition[] = Array.from({ length: 360 }, (_, i) =>
   computeSeatPosition(i),
 );
@@ -188,9 +198,10 @@ export function getSeatPosition(seatIndex: number): SeatPosition {
 
 /**
  * Calibrates a PerspectiveCamera for 9:16 portrait or 16:9 landscape so:
- * 1) Every single primary seat (0..95) + character silhouette fits strictly inside the frame.
- * 2) The entire Golden Buddha Statue (crown y=12.52 down to lotus pedestal y=1.48) is 100% visible
- *    and prominent without zooming out excessively.
+ * 1) Every single primary seat (0..103) + character silhouette fits strictly inside the frame,
+ *    with front rows extending near the bottom edge and outer columns near left/right edges.
+ * 2) The elevated Golden Buddha Statue (crown y=14.92 down to lotus pedestal y=3.88) sits higher
+ *    in the upper background at its exact original visual size without distortion.
  */
 export function configureTempleCamera(
   camera: THREE.PerspectiveCamera,
@@ -204,26 +215,26 @@ export function configureTempleCamera(
 
   camera.aspect = aspect;
   camera.near = 0.2;
-  camera.far = 120;
+  camera.far = 130;
 
   if (isPortrait) {
-    camera.position.set(0, 12.6, 27.6);
-    // Horizontal half-tan >= 0.296 ensures outer seat edges (|x| = 4.90 + 0.34 = 5.24 at z = +9.22)
-    // project inside |ndcX| <= 0.85 while keeping the Buddha large and majestic (~52.5°..56° FOV).
+    camera.position.set(0, 13.1, 28.2);
+    // Horizontal half-tan >= 0.316 ensures outer frontmost seat edges (|x| = 5.08 + 0.32 = 5.40 at z = +12.38)
+    // project inside |ndcX| <= 0.935 while keeping the elevated Buddha at its exact natural visual scale.
     const minHalfTanV = Math.max(
-      Math.tan(THREE.MathUtils.degToRad(53 * 0.5)),
-      0.296 / Math.max(0.45, aspect),
+      Math.tan(THREE.MathUtils.degToRad(55 * 0.5)),
+      0.316 / Math.max(0.45, aspect),
     );
     camera.fov = THREE.MathUtils.clamp(
       THREE.MathUtils.radToDeg(Math.atan(minHalfTanV) * 2),
-      53,
+      54,
       65,
     );
-    camera.lookAt(0, 4.35, -4.2);
+    camera.lookAt(0, 4.75, -3.6);
   } else {
-    camera.position.set(0, 11.4, 24.4);
-    camera.fov = 46;
-    camera.lookAt(0, 4.4, -4.6);
+    camera.position.set(0, 12.2, 26.2);
+    camera.fov = 49;
+    camera.lookAt(0, 4.9, -4.0);
   }
 
   camera.updateMatrixWorld(true);

@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { CharacterAnimState, Participant } from '../../types/temple';
 import { ENTRANCE_Z, getSeatPosition } from '../../systems/SeatManager';
+import { soundSynthesizer } from '../../systems/SoundSynthesizer';
 import { tiktokEventManager } from '../../systems/TikTokEventManager';
 import { liveCharacterPositions } from './templeResources';
 
@@ -53,6 +54,12 @@ const SHARED_GEOS = {
   woodenFishRidge: new THREE.TorusGeometry(0.072, 0.014, 6, 14, Math.PI),
   woodenFishMallet: new THREE.CylinderGeometry(0.01, 0.01, 0.23, 6),
   woodenFishMalletTip: new THREE.SphereGeometry(0.024, 8, 8),
+
+  // Prop 7: Ống Xăm Tre & Thẻ Xăm (Traditional Bamboo Fortune-Stick Container + Numbered Bamboo Sticks)
+  bambooTubeBody: new THREE.CylinderGeometry(0.072, 0.066, 0.23, 14),
+  bambooTubeBand: new THREE.TorusGeometry(0.071, 0.008, 6, 16),
+  bambooStickItem: new THREE.BoxGeometry(0.014, 0.23, 0.005),
+  bambooStickRedTip: new THREE.BoxGeometry(0.015, 0.045, 0.006),
 
   ringInner: new THREE.RingGeometry(0.38, 0.54, 24),
   ringOuter: new THREE.RingGeometry(0.62, 0.78, 28),
@@ -141,6 +148,19 @@ const CUSHION_RED_MAT = new THREE.MeshStandardMaterial({
   roughness: 0.65,
 });
 
+const BAMBOO_TUBE_MAT = new THREE.MeshStandardMaterial({
+  color: '#b8833e',
+  roughness: 0.44,
+  metalness: 0.12,
+});
+
+const BAMBOO_STICK_MAT = new THREE.MeshStandardMaterial({
+  color: '#f2d388',
+  emissive: '#7a520c',
+  emissiveIntensity: 0.36,
+  roughness: 0.34,
+});
+
 const GOLD_BLESS_RING_MAT = new THREE.MeshBasicMaterial({
   color: '#ffd966',
   transparent: true,
@@ -196,6 +216,8 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
   const woodenFishGroupRef = useRef<THREE.Group>(null);
   const woodenFishBodyMeshRef = useRef<THREE.Mesh>(null);
   const malletPropRef = useRef<THREE.Group>(null);
+  const bambooTubePropRef = useRef<THREE.Group>(null);
+  const fallenStickGroupRef = useRef<THREE.Group>(null);
   const blessRingRef = useRef<THREE.Mesh>(null);
   const grandOuterRingRef = useRef<THREE.Mesh>(null);
 
@@ -218,6 +240,9 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     initializedSeatIdx: participant.seatIndex,
     activeRitualId: null as string | null,
     notifiedArrival: false,
+    notifiedXinXamReveal: false,
+    xinXamRattlesPlayed: 0,
+    lastXinXamStage: '' as string,
     activeWoodenFishId: null as string | null,
     strikesPlayedCount: 0,
     wasDeparting: false,
@@ -277,6 +302,9 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     ) {
       kin.current.activeRitualId = participant.activeRitual.id;
       kin.current.notifiedArrival = false;
+      kin.current.notifiedXinXamReveal = false;
+      kin.current.xinXamRattlesPlayed = 0;
+      kin.current.lastXinXamStage = '';
       kin.current.stage = 'leaving_seat_to_aisle';
       kin.current.stageTimer = 0;
       return;
@@ -367,6 +395,11 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     let showLotusPedestal = false;
     let showPagoda = false;
     let showWoodenFish = false;
+    let showBambooTube = false;
+    let showFallenStick = false;
+    let bambooTubeShakeOffsetY = 0;
+    let bambooTubeTiltX = 0.24;
+    let fallenStickDropProgress = 0;
     let showBlessRing = false;
     let showGrandRing = false;
 
@@ -645,6 +678,86 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
             break;
           }
 
+          case 'xin_xam': {
+            isKneelingPosture = true;
+            handsJoined = true;
+            showBlessRing = true;
+            showGrandRing = progress >= 0.56;
+
+            let nextXinXamStage:
+              | 'kneeling'
+              | 'pickup_tube'
+              | 'shaking'
+              | 'stick_falling'
+              | 'revealed'
+              | 'bowing' = 'kneeling';
+
+            if (progress < 0.14) {
+              // Step 1: Kneel respectfully before the Xin Xăm altar stand
+              nextXinXamStage = 'kneeling';
+              const greetBow = Math.sin((progress / 0.14) * Math.PI);
+              targetTorsoPitch = 0.14 + Math.max(0, greetBow) * 0.44;
+            } else if (progress < 0.26) {
+              // Step 2: Reach forward & pick up the bamboo fortune-stick container (Ống Xăm Tre)
+              nextXinXamStage = 'pickup_tube';
+              showBambooTube = true;
+              const liftT = (progress - 0.14) / 0.12;
+              bambooTubeShakeOffsetY = THREE.MathUtils.lerp(-0.08, 0.03, liftT);
+              bambooTubeTiltX = THREE.MathUtils.lerp(0.55, 0.34, liftT);
+              targetTorsoPitch = THREE.MathUtils.lerp(0.32, 0.18, liftT);
+            } else if (progress < 0.58) {
+              // Step 3: Shake the bamboo fortune container naturally in 3D with rhythmic bamboo rattle audio
+              nextXinXamStage = 'shaking';
+              showBambooTube = true;
+              const shakeNorm = (progress - 0.26) / 0.32; // 0..1
+              const shakeCycles = 5;
+              const osc = Math.sin(shakeNorm * Math.PI * 2 * shakeCycles);
+              bambooTubeShakeOffsetY = 0.04 + osc * 0.055;
+              bambooTubeTiltX = 0.44 + Math.cos(shakeNorm * Math.PI * 2 * shakeCycles) * 0.16;
+              targetTorsoPitch = 0.2 + Math.abs(osc) * 0.08;
+              customLeftArmPitch = -1.24 + osc * 0.16;
+              customRightArmPitch = -1.24 + osc * 0.16;
+
+              const expectedRattles = Math.min(4, Math.floor(shakeNorm * 4) + 1);
+              if (k.xinXamRattlesPlayed < expectedRattles) {
+                soundSynthesizer.playBambooShake(0.54, k.xinXamRattlesPlayed);
+                k.xinXamRattlesPlayed += 1;
+              }
+            } else if (progress < 0.76) {
+              // Step 4: Tilt container forward so ONE numbered bamboo fortune stick falls cleanly onto the cushion!
+              nextXinXamStage = progress >= 0.64 ? 'revealed' : 'stick_falling';
+              showBambooTube = progress < 0.72;
+              showFallenStick = true;
+              fallenStickDropProgress = Math.min(1, (progress - 0.58) / 0.12);
+              bambooTubeTiltX = 0.68;
+              bambooTubeShakeOffsetY = 0.01;
+              targetTorsoPitch = 0.26;
+
+              if (progress >= 0.62 && !k.notifiedXinXamReveal) {
+                k.notifiedXinXamReveal = true;
+                tiktokEventManager.notifyXinXamStickRevealed(participant.userId, ritual.id);
+              }
+            } else {
+              // Step 5: Place bamboo container back, clasp hands & bow respectfully before returning to reserved seat
+              nextXinXamStage = 'bowing';
+              showFallenStick = progress < 0.92;
+              fallenStickDropProgress = 1;
+              const bowT = (progress - 0.76) / 0.24;
+              targetTorsoPitch = 0.16 + Math.max(0, Math.sin(bowT * Math.PI)) * 0.66;
+            }
+
+            if (k.lastXinXamStage !== nextXinXamStage) {
+              k.lastXinXamStage = nextXinXamStage;
+              tiktokEventManager.updateXinXamStage(
+                participant.userId,
+                ritual.id,
+                nextXinXamStage,
+                progress,
+              );
+            }
+            break;
+          }
+
           case 'altar_pagoda':
           case 'altar_grand_ceremony':
           default: {
@@ -693,6 +806,13 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
         }
 
         if (k.stageTimer >= rDurSec) {
+          if (ritual.type === 'xin_xam') {
+            if (!k.notifiedXinXamReveal) {
+              k.notifiedXinXamReveal = true;
+              tiktokEventManager.notifyXinXamStickRevealed(participant.userId, ritual.id);
+            }
+            tiktokEventManager.updateXinXamStage(participant.userId, ritual.id, 'returning', 1);
+          }
           k.stage = 'returning_from_altar';
           k.stageTimer = 0;
         }
@@ -1075,6 +1195,26 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       woodenFishBodyMeshRef.current.scale.set(1.18 * woodenFishRecoil, s, 1.05 * woodenFishRecoil);
     }
 
+    if (bambooTubePropRef.current) {
+      bambooTubePropRef.current.visible = showBambooTube;
+      if (showBambooTube) {
+        bambooTubePropRef.current.position.set(0, 0.45 + bambooTubeShakeOffsetY, 0.34);
+        bambooTubePropRef.current.rotation.set(bambooTubeTiltX, 0, 0);
+      }
+    }
+
+    if (fallenStickGroupRef.current) {
+      fallenStickGroupRef.current.visible = showFallenStick;
+      if (showFallenStick) {
+        const dropY = THREE.MathUtils.lerp(0.62, 0.035, fallenStickDropProgress);
+        const dropZ = THREE.MathUtils.lerp(0.38, 0.56, fallenStickDropProgress);
+        const rotX = THREE.MathUtils.lerp(0.65, Math.PI / 2, fallenStickDropProgress);
+        const rotZ = THREE.MathUtils.lerp(0.08, 0.26, fallenStickDropProgress);
+        fallenStickGroupRef.current.position.set(0.03, dropY, dropZ);
+        fallenStickGroupRef.current.rotation.set(rotX, 0, rotZ);
+      }
+    }
+
     if (blessRingRef.current) {
       blessRingRef.current.visible = showBlessRing;
       if (showBlessRing) {
@@ -1146,6 +1286,16 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
           rotation={[0, Math.PI / 2, 0]}
           geometry={SHARED_GEOS.woodenFishRidge}
           material={GOLD_PROP_MAT}
+        />
+      </group>
+
+      {/* Single Numbered Bamboo Fortune Stick (Thẻ Xăm Tre) falling onto the cushion during Xin Xăm */}
+      <group ref={fallenStickGroupRef} position={[0.03, 0.035, 0.56]} visible={false}>
+        <mesh geometry={SHARED_GEOS.bambooStickItem} material={BAMBOO_STICK_MAT} />
+        <mesh
+          position={[0, 0.092, 0]}
+          geometry={SHARED_GEOS.bambooStickRedTip}
+          material={ROSE_CRIMSON_MAT}
         />
       </group>
 
@@ -1387,6 +1537,42 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
             geometry={SHARED_GEOS.pagodaSpire}
             material={LANTERN_FLAME_MAT}
           />
+        </group>
+
+        {/* PROP 7: Ống Xăm Tre – Xin Xăm Cầu Nguyện (Handheld Bamboo Fortune-Stick Cylinder + Bundle of Sticks) */}
+        <group
+          ref={bambooTubePropRef}
+          position={[0, 0.45, 0.34]}
+          rotation={[0.34, 0, 0]}
+          visible={false}
+        >
+          <mesh geometry={SHARED_GEOS.bambooTubeBody} material={BAMBOO_TUBE_MAT} />
+          <mesh
+            position={[0, 0.085, 0]}
+            rotation={[Math.PI / 2, 0, 0]}
+            geometry={SHARED_GEOS.bambooTubeBand}
+            material={LACQUER_TRAY_MAT}
+          />
+          <mesh
+            position={[0, -0.075, 0]}
+            rotation={[Math.PI / 2, 0, 0]}
+            geometry={SHARED_GEOS.bambooTubeBand}
+            material={GOLD_PROP_MAT}
+          />
+          {[-0.026, -0.008, 0.01, 0.026].map((sx, idx) => (
+            <group
+              key={idx}
+              position={[sx, 0.11, (idx % 2 === 0 ? 1 : -1) * 0.012]}
+              rotation={[(idx - 1.5) * 0.06, 0, (idx - 1.5) * -0.08]}
+            >
+              <mesh geometry={SHARED_GEOS.bambooStickItem} material={BAMBOO_STICK_MAT} />
+              <mesh
+                position={[0, 0.092, 0]}
+                geometry={SHARED_GEOS.bambooStickRedTip}
+                material={ROSE_CRIMSON_MAT}
+              />
+            </group>
+          ))}
         </group>
       </group>
     </group>

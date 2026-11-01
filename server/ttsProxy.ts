@@ -253,7 +253,7 @@ export async function fetchVieNeuVoices(
         id,
         name: String(v.name || id),
         description: desc,
-        gender: String(v.gender || 'female'),
+        gender: String(v.gender || 'female').toLowerCase() === 'male' ? 'male' : 'female',
         region: v.region ? String(v.region) : undefined,
         engine: v.engine ? String(v.engine) : 'v4',
         recommended: isCalmMatch,

@@ -215,10 +215,10 @@ export function solveLabelAndBubbleLayout(
     bottom: Math.max(bY1, bY2) + 4,
   };
 
-  // 2. Project Central Incense Altar Table Exclusion Zone (strictly within central aisle |x| <= 1.32)
-  _aTop.set(0, 3.15, -10.8).project(camera);
+  // 2. Project Central Elevated Incense Altar Table Exclusion Zone (strictly within central aisle |x| <= 1.32)
+  _aTop.set(0, 4.45, -10.8).project(camera);
   _aBot.set(0, 0.45, -10.0).project(camera);
-  _aSide.set(1.32, 1.75, -10.4).project(camera);
+  _aSide.set(1.32, 2.55, -10.4).project(camera);
 
   const altarCenterX = _aTop.x * halfW + halfW;
   const altarHalfPxW = Math.abs(_aSide.x * halfW + halfW - altarCenterX) + 2;

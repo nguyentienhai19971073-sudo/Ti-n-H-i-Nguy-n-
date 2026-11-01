@@ -1,5 +1,10 @@
 import { useMemo } from 'react';
-import { GiftIconType, GiftMapping } from '../../types/temple';
+import {
+  GiftIconType,
+  GiftMapping,
+  XinXamSettings,
+  buildSortedOfferingItems,
+} from '../../types/temple';
 import {
   buildBurgundyHeaderStyle,
   buildBurgundyPanelStyle,
@@ -7,9 +12,11 @@ import {
 
 interface BuddhistGiftPanelProps {
   giftMappings: GiftMapping[];
+  xinXamSettings?: XinXamSettings;
   giftEventCounts: Record<string, number>;
   isDemoMode?: boolean;
   onTriggerDemoGift?: (mapping: GiftMapping) => void;
+  onTriggerDemoXinXam?: () => void;
   panelOpacity?: number;
   panelScale?: number;
 }
@@ -144,6 +151,19 @@ export function OfferingSvgIcon({
         </svg>
       );
 
+    case 'bamboo_stick':
+      return (
+        <svg viewBox="0 0 28 28" className={className} aria-hidden="true">
+          <circle cx="14" cy="14" r="12.5" fill="#361409" stroke="#e5bd5a" strokeWidth="1.1" />
+          <path d="M11.4 6.2L10.6 12.2M14 5.6V12.2M16.6 6.2L17.4 12.2" stroke="#ffe18a" strokeWidth="1.3" strokeLinecap="round" />
+          <circle cx="10.9" cy="6.4" r="0.9" fill="#ef476f" />
+          <circle cx="14" cy="5.8" r="1" fill="#ef476f" />
+          <circle cx="17.1" cy="6.4" r="0.9" fill="#ef476f" />
+          <rect x="9.6" y="11.4" width="8.8" height="9.8" rx="1.5" fill="#b8833e" stroke="#ffd978" strokeWidth="0.8" />
+          <path d="M9.6 14.2H18.4M9.6 18.6H18.4" stroke="#7a1118" strokeWidth="1.1" />
+        </svg>
+      );
+
     case 'pagoda':
     default:
       return (
@@ -198,16 +218,25 @@ export function GiftVisualIcon({
   return <OfferingSvgIcon type={gift.iconType} className={`${sizeClass} shrink-0`} />;
 }
 
+/**
+ * Unified "CÚNG DƯỜNG CẦU AN" Panel (Right Edge, Translucent Burgundy RGBA default 0.45)
+ * - Merges all enabled gift rituals AND "XIN XĂM" into a single list sorted by ascending coin value.
+ * - Shows 100% COMPLETE Vietnamese event names, ritual/item descriptions, and coin values (`... xu`)
+ *   with natural multi-line wrapping and dynamic row height — ZERO truncation or cut-off words!
+ */
 export function BuddhistGiftPanel({
   giftMappings,
+  xinXamSettings,
   giftEventCounts,
   isDemoMode = false,
   onTriggerDemoGift,
-  panelOpacity = 0.55,
-  panelScale = 0.9,
+  onTriggerDemoXinXam,
+  panelOpacity = 0.45,
+  panelScale = 0.86,
 }: BuddhistGiftPanelProps) {
-  const activeOfferings = giftMappings.filter(
-    (m) => m.enabled && m.showInOverlayPanel !== false,
+  const sortedOfferings = useMemo(
+    () => buildSortedOfferingItems(giftMappings, xinXamSettings),
+    [giftMappings, xinXamSettings],
   );
 
   const panelStyle = useMemo(
@@ -224,76 +253,105 @@ export function BuddhistGiftPanel({
     <aside
       aria-label="Cúng Dường Cầu An"
       style={panelStyle}
-      className="w-[108px] sm:w-[118px] rounded overflow-hidden pointer-events-auto"
+      className="w-[142px] sm:w-[158px] rounded border pointer-events-auto"
     >
       {/* Compact Burgundy & Gold Lotus Header */}
-      <div style={headerStyle} className="px-1 py-[2.5px] text-center">
-        <div className="flex items-center justify-center gap-0.5">
+      <div style={headerStyle} className="px-1.5 py-1 border-b text-center rounded-t">
+        <div className="flex items-center justify-center gap-1">
           <svg
             viewBox="0 0 24 24"
-            className="w-2 h-2 text-[#ffa6c9] shrink-0 fill-current"
+            className="w-2.5 h-2.5 text-[#ffa6c9] shrink-0 fill-current"
             aria-hidden="true"
           >
             <path d="M12 3C10.2 6.2 8.5 8.8 8.5 11.4C8.5 13.5 10 15.2 12 15.8C14 15.2 15.5 13.5 15.5 11.4C15.5 8.8 13.8 6.2 12 3ZM5.2 9.5C4.8 12.2 6 14.8 8.8 16.1C7.6 14.3 7.2 12.1 7.6 10.2C6.8 9.9 6 9.7 5.2 9.5ZM18.8 9.5C18 9.7 17.2 9.9 16.4 10.2C16.8 12.1 16.4 14.3 15.2 16.1C18 14.8 19.2 12.2 18.8 9.5ZM4 16.8C6.6 18.8 9.3 19.5 12 19.5C14.7 19.5 17.4 18.8 20 16.8C17.2 16.9 14.6 17.4 12 18.2C9.4 17.4 6.8 16.9 4 16.8Z" />
           </svg>
-          <h2 className="font-display text-[9px] font-bold tracking-wider text-[#ffe89e] leading-none whitespace-nowrap">
+          <h2 className="font-display text-[8.5px] sm:text-[9px] font-bold tracking-wider text-[#ffe89e] leading-snug whitespace-normal break-words">
             CÚNG DƯỜNG CẦU AN
           </h2>
         </div>
       </div>
 
-      {/* Compact Ceremonial Ritual Rows */}
-      <div className="divide-y divide-[#d4af37]/15 px-1 py-[2px] max-h-[136px] overflow-y-auto temple-scroll">
-        {activeOfferings.map((item) => {
-          const count = giftEventCounts[item.giftId] ?? giftEventCounts[item.id] ?? 0;
-          const interactive = Boolean(isDemoMode && onTriggerDemoGift);
+      {/* Complete Unwrapped Ceremonial Event Rows Sorted Ascending by Coin Value */}
+      <div className="divide-y divide-[#d4af37]/15 px-1.5 py-0.5 max-h-[246px] overflow-y-auto temple-scroll">
+        {sortedOfferings.map((item) => {
+          const isXinXam = item.kind === 'xin_xam';
+          const count = isXinXam
+            ? (giftEventCounts['xin_xam'] ??
+              (item.giftId ? giftEventCounts[item.giftId] : 0) ??
+              0)
+            : (giftEventCounts[item.giftId] ?? giftEventCounts[item.id] ?? 0);
+
+          const canClickDemo = Boolean(
+            isDemoMode &&
+              ((isXinXam && onTriggerDemoXinXam) ||
+                (!isXinXam && item.giftMapping && onTriggerDemoGift)),
+          );
+
+          const triggerAction = () => {
+            if (!canClickDemo) return;
+            if (isXinXam) {
+              onTriggerDemoXinXam?.();
+            } else if (item.giftMapping) {
+              onTriggerDemoGift?.(item.giftMapping);
+            }
+          };
 
           return (
             <div
-              key={item.giftId || item.id}
-              role={interactive ? 'button' : undefined}
-              tabIndex={interactive ? 0 : undefined}
-              title={
-                interactive
-                  ? `Nhấn thử nghi lễ: ${item.ceremonyTitle} – ${item.vietnameseLabel}`
-                  : `${item.ceremonyTitle} – ${item.vietnameseLabel} (${item.referenceCoins} xu)`
-              }
-              onClick={interactive ? () => onTriggerDemoGift?.(item) : undefined}
+              key={item.id}
+              role={canClickDemo ? 'button' : undefined}
+              tabIndex={canClickDemo ? 0 : undefined}
+              title={`${item.ceremonyTitle} – ${item.vietnameseLabel} – ${item.referenceCoins} xu`}
+              onClick={canClickDemo ? triggerAction : undefined}
               onKeyDown={
-                interactive
+                canClickDemo
                   ? (e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        onTriggerDemoGift?.(item);
+                        triggerAction();
                       }
                     }
                   : undefined
               }
-              className={`flex items-center justify-between gap-1 py-[2px] px-0.5 rounded transition-colors ${
-                interactive ? 'hover:bg-[#5c1622]/45 cursor-pointer' : ''
+              className={`h-auto flex items-start justify-between gap-1.5 py-1 px-0.5 rounded transition-colors ${
+                canClickDemo ? 'hover:bg-[#5c1622]/45 cursor-pointer' : ''
               }`}
             >
-              <GiftVisualIcon gift={item} sizeClass="w-3.5 h-3.5" />
+              <div className="pt-0.5 shrink-0">
+                <GiftVisualIcon
+                  gift={{
+                    iconType: item.iconType,
+                    iconUrl: item.iconUrl,
+                    uploadedImageData: item.uploadedImageData,
+                    vietnameseLabel: item.vietnameseLabel,
+                  }}
+                  sizeClass="w-3.5 h-3.5"
+                />
+              </div>
 
-              <div className="min-w-0 flex-1 leading-none">
-                <p className="font-display text-[8px] font-bold tracking-wide text-[#ffe89e] truncate">
+              <div className="flex-1 min-w-0 leading-snug">
+                <p className="font-display text-[8px] sm:text-[8.5px] font-bold tracking-wide text-[#ffe89e] whitespace-normal break-words">
                   {item.ceremonyTitle}
                 </p>
-                <p className="text-[7.5px] text-[#f7ead8] truncate mt-[1px]">
+                <p className="text-[7.5px] sm:text-[8px] text-[#fff3e0] whitespace-normal break-words mt-[1px]">
                   <span className="font-medium">{item.vietnameseLabel}</span>
-                  <span className="text-[#d4af37]/75 mx-0.5">·</span>
-                  <span className="font-mono-tabular text-[#ffd978]">{item.referenceCoins}x</span>
+                  <span className="text-[#d4af37]/80"> · </span>
+                  <span className="font-mono-tabular font-semibold text-[#ffd978] whitespace-nowrap">
+                    {item.referenceCoins} xu
+                  </span>
                 </p>
               </div>
 
-              <div
-                style={{ backgroundColor: 'rgba(18, 5, 8, 0.55)' }}
-                className="shrink-0 min-w-[15px] px-1 py-[0.5px] rounded border border-[#d4af37]/35 text-center"
-              >
-                <span className="font-mono-tabular text-[8px] font-bold text-[#ffe699] leading-none">
-                  {count}
-                </span>
-              </div>
+              {count > 0 && (
+                <div
+                  style={{ backgroundColor: 'rgba(18, 5, 8, 0.48)' }}
+                  className="shrink-0 mt-0.5 px-1 py-[1px] rounded border border-[#d4af37]/35 text-center"
+                >
+                  <span className="font-mono-tabular text-[7.5px] font-bold text-[#ffe699] leading-none whitespace-nowrap">
+                    {count}
+                  </span>
+                </div>
+              )}
             </div>
           );
         })}

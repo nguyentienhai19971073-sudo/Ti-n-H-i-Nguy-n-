@@ -3,8 +3,13 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import { BuddhaModelLoadStatus } from '../../types/temple';
-import { ALTAR_CENTER_Z } from '../../systems/SeatManager';
+import { ActiveXinXamVisualState, BuddhaModelLoadStatus } from '../../types/temple';
+import {
+  ALTAR_CENTER_Z,
+  BUDDHA_ELEVATION_Y,
+  BUDDHA_STATUE_SCALE,
+  SANCTUARY_BUDDHA_BOUNDS,
+} from '../../systems/SeatManager';
 import { createBannerTexture, createRadialGlowTexture } from './templeResources';
 
 interface BuddhaAltarProps {
@@ -14,6 +19,8 @@ interface BuddhaAltarProps {
   fruitGlowUntil: number;
   lotusGlowUntil: number;
   pagodaGlowUntil: number;
+  xinXamGlowUntil?: number;
+  activeXinXamVisual?: ActiveXinXamVisualState | null;
   floatingLanternCount: number;
   buddhaModelUrl?: string;
   buddhaGoldOverride?: boolean;
@@ -22,11 +29,7 @@ interface BuddhaAltarProps {
 
 // Exported Sanctuary Buddha world-space bounding constants for camera framing & UI exclusion checks
 export const BUDDHA_WORLD_BOUNDS = {
-  centerX: 0,
-  centerZ: ALTAR_CENTER_Z - 0.82, // -13.22
-  pedestalBottomY: 1.48,
-  haloTopY: 12.52,
-  halfWidthX: 3.35,
+  ...SANCTUARY_BUDDHA_BOUNDS,
 };
 
 function disposeObject3D(root: THREE.Object3D): void {
@@ -55,6 +58,8 @@ export function BuddhaAltar({
   fruitGlowUntil,
   lotusGlowUntil,
   pagodaGlowUntil,
+  xinXamGlowUntil = 0,
+  activeXinXamVisual = null,
   floatingLanternCount,
   buddhaModelUrl = '',
   buddhaGoldOverride = true,
@@ -77,6 +82,9 @@ export function BuddhaAltar({
   const lotusStandLeftRef = useRef<THREE.Group>(null);
   const lotusStandRightRef = useRef<THREE.Group>(null);
   const ceremonySpotLightRef = useRef<THREE.PointLight>(null);
+  const xinXamTubeGroupRef = useRef<THREE.Group>(null);
+  const xinXamGlowingStickRef = useRef<THREE.Group>(null);
+  const xinXamSpotLightRef = useRef<THREE.PointLight>(null);
 
   const [externalBuddhaScene, setExternalBuddhaScene] = useState<THREE.Group | null>(null);
 
@@ -203,6 +211,30 @@ export function BuddhaAltar({
         roughness: 0.14,
         emissive: '#0a211d',
         emissiveIntensity: 0.3,
+      }),
+    [],
+  );
+
+  const bambooTubeMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#b88339',
+        roughness: 0.38,
+        metalness: 0.18,
+        emissive: '#3d2206',
+        emissiveIntensity: 0.2,
+      }),
+    [],
+  );
+
+  const bambooStickMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#ecd08b',
+        roughness: 0.34,
+        metalness: 0.14,
+        emissive: '#63430c',
+        emissiveIntensity: 0.25,
       }),
     [],
   );
@@ -670,56 +702,145 @@ export function BuddhaAltar({
         grp.rotation.y = t * 0.22 + seed.phase;
       }
     }
+
+    // Animate 3D Xin Xăm Stand: bamboo container idle/active state + rising glowing bamboo fortune stick
+    const isXinXamGlowing = now < xinXamGlowUntil || Boolean(activeXinXamVisual);
+    if (xinXamSpotLightRef.current) {
+      const targetIntensity = isXinXamGlowing ? 7.8 : 1.8;
+      xinXamSpotLightRef.current.intensity = THREE.MathUtils.damp(
+        xinXamSpotLightRef.current.intensity,
+        targetIntensity,
+        5,
+        delta,
+      );
+    }
+
+    if (xinXamTubeGroupRef.current) {
+      const heldByWorshipper =
+        activeXinXamVisual &&
+        (activeXinXamVisual.stage === 'pickup_tube' ||
+          activeXinXamVisual.stage === 'shaking' ||
+          activeXinXamVisual.stage === 'stick_falling');
+      xinXamTubeGroupRef.current.visible = !heldByWorshipper;
+    }
+
+    if (xinXamGlowingStickRef.current) {
+      const showRadiantStick =
+        Boolean(
+          activeXinXamVisual &&
+            (activeXinXamVisual.stage === 'stick_falling' ||
+              activeXinXamVisual.stage === 'revealed' ||
+              activeXinXamVisual.stage === 'bowing'),
+        ) || now < xinXamGlowUntil;
+
+      xinXamGlowingStickRef.current.visible = showRadiantStick;
+      if (showRadiantStick) {
+        xinXamGlowingStickRef.current.position.y = THREE.MathUtils.damp(
+          xinXamGlowingStickRef.current.position.y,
+          1.78 + Math.sin(t * 3.1) * 0.08,
+          5,
+          delta,
+        );
+        xinXamGlowingStickRef.current.rotation.y = t * 1.15;
+      } else {
+        xinXamGlowingStickRef.current.position.y = 1.05;
+      }
+    }
   });
 
   return (
     <group position={[0, 0, ALTAR_CENTER_Z]}>
-      {/* Grand Sanctuary Carved Rosewood & Crimson Lacquer Backdrop */}
+      {/* Grand Sanctuary Carved Rosewood & Crimson Lacquer Backdrop (raised cleanly for elevated Buddha!) */}
       <group position={[0, 0, -3.2]}>
-        <mesh position={[0, 7.2, 0]} material={darkWoodMat}>
-          <boxGeometry args={[16.8, 14.4, 0.58]} />
+        <mesh position={[0, 8.6, 0]} material={darkWoodMat}>
+          <boxGeometry args={[17.2, 17.2, 0.58]} />
         </mesh>
-        <mesh position={[0, 7.0, 0.31]} material={crimsonLacquerMat}>
-          <boxGeometry args={[11.6, 13.0, 0.14]} />
+        <mesh position={[0, 8.4, 0.31]} material={crimsonLacquerMat}>
+          <boxGeometry args={[11.8, 15.6, 0.14]} />
         </mesh>
-        {/* High Gilded Horizontal Sanctuary Plaque (Hoành Phi Đại Hùng Bảo Điện — raised cleanly above halo!) */}
-        <mesh position={[0, 13.65, 0.48]} material={goldTrimMat}>
+        {/* High Gilded Horizontal Sanctuary Plaque (Hoành Phi Đại Hùng Bảo Điện — raised to y = 16.25 cleanly above halo y = 14.92!) */}
+        <mesh position={[0, 16.25, 0.48]} material={goldTrimMat}>
           <boxGeometry args={[8.4, 0.96, 0.22]} />
         </mesh>
-        <mesh position={[0, 13.65, 0.61]} material={crimsonLacquerMat}>
+        <mesh position={[0, 16.25, 0.61]} material={crimsonLacquerMat}>
           <boxGeometry args={[7.8, 0.66, 0.06]} />
         </mesh>
 
-        {/* Left & Right Tall Gilded Calligraphy Couplets (Câu Đối) flanking the Buddha */}
-        <mesh position={[-5.95, 6.8, 0.4]}>
-          <planeGeometry args={[1.18, 8.6]} />
+        {/* Left & Right Tall Gilded Calligraphy Couplets (Câu Đối) flanking the elevated Buddha */}
+        <mesh position={[-6.05, 8.8, 0.4]}>
+          <planeGeometry args={[1.18, 9.6]} />
           <meshStandardMaterial map={leftCoupletTex} roughness={0.36} metalness={0.28} />
         </mesh>
-        <mesh position={[5.95, 6.8, 0.4]}>
-          <planeGeometry args={[1.18, 8.6]} />
+        <mesh position={[6.05, 8.8, 0.4]}>
+          <planeGeometry args={[1.18, 9.6]} />
           <meshStandardMaterial map={rightCoupletTex} roughness={0.36} metalness={0.28} />
         </mesh>
       </group>
 
-      {/* Stepped Sanctuary Dais Platform (Bệ Thờ Tam Cấp Trang Nghiêm — y = 0..1.48) */}
-      <mesh position={[0, 0.22, 0.1]} material={darkWoodMat} receiveShadow>
-        <boxGeometry args={[12.4, 0.44, 5.4]} />
-      </mesh>
-      <mesh position={[0, 0.46, 0.1]} material={goldTrimMat}>
-        <boxGeometry args={[12.52, 0.07, 5.5]} />
-      </mesh>
-      <mesh position={[0, 0.95, -0.7]} material={crimsonLacquerMat} receiveShadow>
-        <boxGeometry args={[8.8, 0.92, 4.1]} />
-      </mesh>
-      <mesh position={[0, 1.44, -0.7]} material={goldTrimMat}>
-        <boxGeometry args={[8.96, 0.09, 4.24]} />
-      </mesh>
+      {/* ====================================================================
+          NATURALLY ELEVATED 5-TIER STEPPED SANCTUARY PLATFORM WITH TRADITIONAL STEPS
+          (Bệ Thờ Thượng Điện Ngũ Cấp — y = 0 .. 3.88 supporting the raised Buddha)
+         ==================================================================== */}
+      <group>
+        {/* Tier 1 Foundation Terrace (y = 0 .. 0.62) */}
+        <mesh position={[0, 0.31, 0.4]} material={darkWoodMat} receiveShadow>
+          <boxGeometry args={[13.2, 0.62, 6.4]} />
+        </mesh>
+        <mesh position={[0, 0.64, 0.4]} material={goldTrimMat}>
+          <boxGeometry args={[13.34, 0.07, 6.52]} />
+        </mesh>
+
+        {/* Tier 2 Sanctuary Terrace (y = 0.64 .. 1.56, supports the Offering Altar Table at y = 1.58) */}
+        <mesh position={[0, 1.1, -0.05]} material={crimsonLacquerMat} receiveShadow>
+          <boxGeometry args={[11.2, 0.92, 5.4]} />
+        </mesh>
+        <mesh position={[0, 1.58, -0.05]} material={goldTrimMat}>
+          <boxGeometry args={[11.34, 0.08, 5.52]} />
+        </mesh>
+
+        {/* Tier 3 Upper Sanctuary Dais (y = 1.58 .. 2.52) */}
+        <mesh position={[0, 2.05, -0.68]} material={darkWoodMat} receiveShadow>
+          <boxGeometry args={[9.4, 0.94, 4.25]} />
+        </mesh>
+        <mesh position={[0, 2.54, -0.68]} material={goldTrimMat}>
+          <boxGeometry args={[9.54, 0.08, 4.36]} />
+        </mesh>
+
+        {/* Tier 4 Sculpted Sumeru Upper Throne Base (y = 2.54 .. 3.88) */}
+        <mesh position={[0, 3.2, -0.82]} material={crimsonLacquerMat} receiveShadow>
+          <boxGeometry args={[7.8, 1.32, 3.85]} />
+        </mesh>
+        <mesh position={[0, 3.86, -0.82]} material={goldTrimMat}>
+          <boxGeometry args={[7.98, 0.09, 3.98]} />
+        </mesh>
+
+        {/* Traditional Carved Central Temple Steps leading onto the Sanctuary Platform */}
+        {[0, 1, 2, 3].map((stepIdx) => {
+          const stepH = 0.36;
+          const sy = stepIdx * 0.38 + stepH * 0.5;
+          const sz = 3.55 - stepIdx * 0.38;
+          return (
+            <group key={`altar-step-${stepIdx}`} position={[0, sy, sz]}>
+              <mesh material={darkWoodMat} receiveShadow>
+                <boxGeometry args={[3.4 - stepIdx * 0.14, stepH, 0.44]} />
+              </mesh>
+              <mesh position={[0, stepH * 0.5 + 0.015, 0.02]} material={goldTrimMat}>
+                <boxGeometry args={[3.46 - stepIdx * 0.14, 0.035, 0.46]} />
+              </mesh>
+            </group>
+          );
+        })}
+      </group>
 
       {/* ====================================================================
           SACRED 24K GOLDEN BUDDHA STATUE & SCULPTED THREE-TIER LOTUS THRONE
-          100% Unobstructed Head-to-Pedestal Framing Inside 9:16 Portrait View
+          - Raised vertically to y = BUDDHA_ELEVATION_Y (3.88)
+          - Scale preserved at EXACT BUDDHA_STATUE_SCALE (1.82) — ZERO enlargement!
          ==================================================================== */}
-      <group position={[0, 1.48, -0.82]} scale={[1.82, 1.82, 1.82]}>
+      <group
+        position={[0, BUDDHA_ELEVATION_Y, -0.82]}
+        scale={[BUDDHA_STATUE_SCALE, BUDDHA_STATUE_SCALE, BUDDHA_STATUE_SCALE]}
+      >
         {/* 1. Turned Sumeru Throne & Flat Golden Lotus Seed Pod (Bệ Tu Di & Gương Sen) */}
         <mesh geometry={sculptedGeos.sumeruPedestal} material={goldTrimMat} castShadow receiveShadow />
 
@@ -1162,10 +1283,10 @@ export function BuddhaAltar({
       </group>
 
       {/* ====================================================================
-          LOW GRACEFUL WOODEN OFFERING ALTAR TABLE (Bàn Thờ Hương Án — y = 1.04)
-          Positioned strictly below the Lotus Pedestal sightline!
+          ELEVATED GRACEFUL WOODEN OFFERING ALTAR TABLE (Bàn Thờ Hương Án — base y = 1.58, top y = 2.62)
+          Positioned atop Tier 2 terrace strictly below the Lotus Pedestal (y = 3.88)!
          ==================================================================== */}
-      <group position={[0, 0, 2.55]}>
+      <group position={[0, 1.58, 1.95]}>
         <mesh position={[0, 1.04, 0]} material={darkWoodMat} castShadow receiveShadow>
           <boxGeometry args={[5.9, 0.15, 1.36]} />
         </mesh>
@@ -1452,6 +1573,96 @@ export function BuddhaAltar({
             depthWrite={false}
           />
         </mesh>
+      </group>
+
+      {/* ====================================================================
+          SEPARATE 3D XIN XĂM RITUAL STATION (Bàn Xin Xăm Cầu Nguyện — Left Sanctuary x = -3.82)
+          Symmetrical counterpart to the Bronze Bell Stand; characters kneel at (-3.28, -8.92)
+          without ever walking into the elevated Buddha statue!
+         ==================================================================== */}
+      <group position={[-3.82, 0, 3.12]}>
+        {/* Crimson & Gold Kneeling Cushion for Xin Xăm Worshipper (at world x = -3.28, z = -8.92) */}
+        <group position={[0.54, 0.02, 0.36]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} material={goldTrimMat}>
+            <ringGeometry args={[0.36, 0.46, 24]} />
+          </mesh>
+          <mesh position={[0, 0.022, 0]} material={crimsonLacquerMat} receiveShadow>
+            <cylinderGeometry args={[0.35, 0.39, 0.045, 20]} />
+          </mesh>
+        </group>
+
+        {/* Carved Rosewood & Gold Fortune Stand (Án Đặt Ống Xăm Tre) */}
+        <mesh position={[0, 0.44, 0]} material={darkWoodMat} castShadow receiveShadow>
+          <cylinderGeometry args={[0.42, 0.48, 0.88, 16]} />
+        </mesh>
+        <mesh position={[0, 0.9, 0]} material={crimsonLacquerMat} receiveShadow>
+          <cylinderGeometry args={[0.52, 0.44, 0.08, 20]} />
+        </mesh>
+        <mesh position={[0, 0.94, 0]} material={goldTrimMat}>
+          <torusGeometry args={[0.5, 0.032, 10, 24]} />
+        </mesh>
+
+        {/* Resting Traditional Bamboo Fortune-Stick Container (Ống Xăm Tre Truyền Thống) */}
+        <group ref={xinXamTubeGroupRef} position={[0, 0.96, 0]}>
+          <mesh position={[0, 0.18, 0]} material={bambooTubeMat} castShadow>
+            <cylinderGeometry args={[0.145, 0.135, 0.36, 18]} />
+          </mesh>
+          <mesh position={[0, 0.06, 0]} material={goldTrimMat}>
+            <torusGeometry args={[0.142, 0.014, 8, 20]} />
+          </mesh>
+          <mesh position={[0, 0.3, 0]} material={goldTrimMat}>
+            <torusGeometry args={[0.148, 0.015, 8, 20]} />
+          </mesh>
+          {/* Bundle of Carved Bamboo Fortune Sticks inside the Tube */}
+          {Array.from({ length: 14 }, (_, sIdx) => {
+            const ang = (sIdx / 14) * Math.PI * 2;
+            const rad = sIdx % 3 === 0 ? 0.03 : 0.075;
+            return (
+              <group
+                key={`altar-stick-${sIdx}`}
+                position={[Math.cos(ang) * rad, 0.34, Math.sin(ang) * rad]}
+                rotation={[Math.sin(ang) * 0.08, ang, Math.cos(ang) * 0.08]}
+              >
+                <mesh material={bambooStickMat}>
+                  <boxGeometry args={[0.022, 0.24, 0.009]} />
+                </mesh>
+                <mesh position={[0, 0.11, 0]} material={crimsonLacquerMat}>
+                  <boxGeometry args={[0.024, 0.038, 0.011]} />
+                </mesh>
+              </group>
+            );
+          })}
+        </group>
+
+        {/* Rising Radiant Golden Bamboo Fortune Stick (Thẻ Xăm Vàng Phát Sáng Khi Khai Quẻ) */}
+        <group ref={xinXamGlowingStickRef} position={[0.16, 1.65, 0.12]} visible={false}>
+          <mesh material={goldStatueMat}>
+            <boxGeometry args={[0.065, 0.62, 0.02]} />
+          </mesh>
+          <mesh position={[0, 0.27, 0]} material={crimsonLacquerMat}>
+            <boxGeometry args={[0.07, 0.1, 0.024]} />
+          </mesh>
+          <mesh position={[0, 0, 0]}>
+            <planeGeometry args={[0.92, 0.92]} />
+            <meshBasicMaterial
+              map={haloGlowTex}
+              transparent
+              opacity={0.92}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+        </group>
+
+        {/* Warm Golden Illumination over the Xin Xăm Ritual Station */}
+        <pointLight
+          ref={xinXamSpotLightRef}
+          position={[0.25, 2.25, 0.35]}
+          color="#ffe184"
+          intensity={1.8}
+          distance={9.5}
+          decay={1.7}
+        />
       </group>
     </group>
   );

@@ -39,7 +39,7 @@ interface FallingLotusParticle {
   lifeMs: number;
 }
 
-const MAX_ACTIVE_PARTICLES = 240;
+const MAX_ACTIVE_PARTICLES = 210;
 
 let cachedSprites: Record<SpriteKind, HTMLCanvasElement> | null = null;
 
@@ -389,16 +389,16 @@ export function LotusFallingEffect({
           (p.vx + Math.sin(progress * Math.PI * 2 * p.swayFreq + p.swayPhase) * p.swayAmp) * dtSec;
         p.rotation += p.rotSpeed * dtSec;
 
-        // Gentle parting & alpha softening across the upper-center Golden Buddha sanctuary
-        // (cx = 0.50, cy = 0.22, rx = 0.145, ry = 0.135) so the Buddha statue is never blocked!
+        // Gentle parting & alpha softening across the upper-center Elevated Golden Buddha sanctuary
+        // (cx = 0.50, cy = 0.17, rx = 0.15, ry = 0.135) so the raised Buddha statue is never blocked!
         const dxB = (p.x - 0.5) / 0.15;
-        const dyB = (p.y - 0.22) / 0.14;
+        const dyB = (p.y - 0.17) / 0.135;
         const distSqBuddha = dxB * dxB + dyB * dyB;
         let buddhaAttenuation = 1;
         if (distSqBuddha < 1) {
           const pushDir = p.x < 0.5 ? -1 : 1;
-          p.x += pushDir * 0.045 * dtSec * (1 - distSqBuddha);
-          buddhaAttenuation = 0.28 + 0.72 * distSqBuddha;
+          p.x += pushDir * 0.048 * dtSec * (1 - distSqBuddha);
+          buddhaAttenuation = 0.26 + 0.74 * distSqBuddha;
         }
 
         // Smooth fade-in and sacred fade-out

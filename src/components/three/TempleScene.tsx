@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   ActiveGiftVisualEffect,
+  ActiveXinXamVisualState,
   BuddhaModelLoadStatus,
   Participant,
   QualityPreset,
@@ -34,6 +35,8 @@ interface TempleSceneProps {
   fruitGlowUntil: number;
   lotusGlowUntil: number;
   pagodaGlowUntil: number;
+  xinXamGlowUntil?: number;
+  activeXinXamVisual?: ActiveXinXamVisualState | null;
   floatingLanternCount: number;
   overlaySettings: StreamOverlaySettings;
   currentSpeakerUserId?: string | null;
@@ -283,6 +286,8 @@ export function TempleScene({
   fruitGlowUntil,
   lotusGlowUntil,
   pagodaGlowUntil,
+  xinXamGlowUntil = 0,
+  activeXinXamVisual = null,
   floatingLanternCount,
   overlaySettings,
   currentSpeakerUserId,
@@ -419,6 +424,8 @@ export function TempleScene({
             fruitGlowUntil={fruitGlowUntil}
             lotusGlowUntil={lotusGlowUntil}
             pagodaGlowUntil={pagodaGlowUntil}
+            xinXamGlowUntil={xinXamGlowUntil}
+            activeXinXamVisual={activeXinXamVisual}
             floatingLanternCount={floatingLanternCount}
             buddhaModelUrl={overlaySettings.buddhaModelUrl}
             buddhaGoldOverride={overlaySettings.buddhaGoldOverride}
