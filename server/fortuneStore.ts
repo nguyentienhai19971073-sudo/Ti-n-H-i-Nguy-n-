@@ -169,20 +169,31 @@ export function normalizeXinXamSettings(
     3.5,
     Math.min(18.0, Number(raw.animationDurationSec ?? existing.animationDurationSec ?? 6.2)),
   );
-  const panelScale = Math.max(
-    0.7,
-    Math.min(1.15, Number(raw.panelScale ?? existing.panelScale ?? 0.92)),
+  const incomingSchema = Number(raw.schemaVersion ?? existing.schemaVersion ?? 2);
+  const isUpgradingFromV2 = incomingSchema < 3 && raw.displayMode === undefined;
+
+  const rawScale = Number(raw.panelScale ?? existing.panelScale ?? 1.0);
+  const migratedScale = isUpgradingFromV2 && Math.abs(rawScale - 0.92) < 0.005 ? 1.0 : rawScale;
+  const panelScale = Math.max(0.7, Math.min(1.25, migratedScale));
+
+  const rawOpacity = Number(raw.panelOpacity ?? existing.panelOpacity ?? 0.55);
+  const migratedOpacity =
+    isUpgradingFromV2 && Math.abs(rawOpacity - 0.45) < 0.005 ? 0.55 : rawOpacity;
+  const panelOpacity = Math.max(0.25, Math.min(0.88, migratedOpacity));
+
+  const rawDuration = Number(
+    raw.resultDisplayDurationMs ?? existing.resultDisplayDurationMs ?? 8000,
   );
-  const panelOpacity = Math.max(
-    0.25,
-    Math.min(0.85, Number(raw.panelOpacity ?? existing.panelOpacity ?? 0.45)),
-  );
-  const resultDisplayDurationMs = Math.max(
-    3000,
-    Math.min(
-      14000,
-      Math.round(Number(raw.resultDisplayDurationMs ?? existing.resultDisplayDurationMs ?? 6800)),
-    ),
+  const migratedDuration =
+    isUpgradingFromV2 && Math.abs(rawDuration - 6800) < 50 ? 8000 : rawDuration;
+  const resultDisplayDurationMs = Math.max(3000, Math.min(15000, Math.round(migratedDuration)));
+
+  const displayMode =
+    (raw.displayMode ?? existing.displayMode) === 'detailed' ? 'detailed' : 'compact';
+
+  const textScale = Math.max(
+    0.8,
+    Math.min(1.3, Number(raw.textScale ?? existing.textScale ?? 1.0)),
   );
 
   const rawTpl = cleanField(
@@ -207,7 +218,9 @@ export function normalizeXinXamSettings(
     panelScale: Math.round(panelScale * 100) / 100,
     panelOpacity: Math.round(panelOpacity * 100) / 100,
     resultDisplayDurationMs,
-    schemaVersion: 2,
+    displayMode,
+    textScale: Math.round(textScale * 100) / 100,
+    schemaVersion: 3,
   };
 }
 

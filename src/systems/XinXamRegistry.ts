@@ -46,11 +46,32 @@ export class XinXamRegistry {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (parsed?.settings) {
-        const rawTpl = parsed.settings.voiceTemplate;
+        const s = parsed.settings as Partial<XinXamSettings>;
+        const isLegacyV2 = Number(s.schemaVersion ?? 2) < 3 && s.displayMode === undefined;
+        const rawTpl = s.voiceTemplate;
         this.settings = {
           ...DEFAULT_XIN_XAM_SETTINGS,
-          ...parsed.settings,
-          giftId: normalizeGiftId(parsed.settings.giftId),
+          ...s,
+          panelScale:
+            isLegacyV2 && typeof s.panelScale === 'number' && Math.abs(s.panelScale - 0.92) < 0.005
+              ? 1.0
+              : (s.panelScale ?? DEFAULT_XIN_XAM_SETTINGS.panelScale),
+          panelOpacity:
+            isLegacyV2 &&
+            typeof s.panelOpacity === 'number' &&
+            Math.abs(s.panelOpacity - 0.45) < 0.005
+              ? 0.55
+              : (s.panelOpacity ?? DEFAULT_XIN_XAM_SETTINGS.panelOpacity),
+          resultDisplayDurationMs:
+            isLegacyV2 &&
+            typeof s.resultDisplayDurationMs === 'number' &&
+            Math.abs(s.resultDisplayDurationMs - 6800) < 50
+              ? 8000
+              : (s.resultDisplayDurationMs ?? DEFAULT_XIN_XAM_SETTINGS.resultDisplayDurationMs),
+          displayMode: s.displayMode === 'detailed' ? 'detailed' : 'compact',
+          textScale: typeof s.textScale === 'number' ? s.textScale : 1.0,
+          schemaVersion: 3,
+          giftId: normalizeGiftId(s.giftId),
           voiceTemplate:
             !rawTpl || rawTpl === LEGACY_V1_XIN_XAM_VOICE_TEMPLATE
               ? DEFAULT_XIN_XAM_VOICE_TEMPLATE
@@ -193,9 +214,21 @@ export class XinXamRegistry {
    * Programmatic setter used by unit tests or instant local sync.
    */
   public setSettingsLocal(patch: Partial<XinXamSettings>): XinXamSettings {
-    this.settings = {
+    const merged = {
       ...this.settings,
       ...patch,
+    };
+    this.settings = {
+      ...merged,
+      panelScale: Math.max(0.7, Math.min(1.25, Number(merged.panelScale || 1.0))),
+      panelOpacity: Math.max(0.25, Math.min(0.88, Number(merged.panelOpacity || 0.55))),
+      resultDisplayDurationMs: Math.max(
+        3000,
+        Math.min(15000, Math.round(Number(merged.resultDisplayDurationMs || 8000))),
+      ),
+      displayMode: merged.displayMode === 'detailed' ? 'detailed' : 'compact',
+      textScale: Math.max(0.8, Math.min(1.3, Number(merged.textScale || 1.0))),
+      schemaVersion: 3,
       giftId: normalizeGiftId(patch.giftId !== undefined ? patch.giftId : this.settings.giftId),
       voiceTemplate: sanitizeCeremonialText(
         patch.voiceTemplate ?? this.settings.voiceTemplate,

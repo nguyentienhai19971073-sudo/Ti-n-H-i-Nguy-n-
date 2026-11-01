@@ -10,6 +10,7 @@ import {
   DEFAULT_OVERLAY_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
   GiftMapping,
+  SceneCalibrationSettings,
   ServerConnectionSnapshot,
   StreamOverlaySettings,
   TikTokNormalizedEvent,
@@ -29,6 +30,12 @@ import {
   savePersistedOverlaySettings,
   savePersistedVoiceSettings,
 } from './systems/OverlayTheme';
+import {
+  loadPersistedSceneCalibration,
+  resetPersistedSceneCalibration,
+  savePersistedSceneCalibration,
+  setActiveSceneCalibration,
+} from './systems/SceneCalibration';
 import {
   PRIMARY_DEMO_VIEWER,
   PrayerDemoTopic,
@@ -77,6 +84,10 @@ export default function App() {
       typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
     const obsParam = Boolean(params?.get('obs') === '1' || params?.get('mode') === 'obs');
     return loadPersistedOverlaySettings(obsParam);
+  });
+  const [sceneCalibration, setSceneCalibration] = useState<SceneCalibrationSettings>(() => {
+    const loaded = loadPersistedSceneCalibration();
+    return setActiveSceneCalibration(loaded);
   });
 
   const [buddhaModelStatus, setBuddhaModelStatus] = useState<BuddhaModelLoadStatus>('builtin');
@@ -266,6 +277,17 @@ export default function App() {
     });
   }, []);
 
+  const handleUpdateSceneCalibration = useCallback((next: SceneCalibrationSettings) => {
+    const applied = setActiveSceneCalibration(next);
+    setSceneCalibration(applied);
+    savePersistedSceneCalibration(applied);
+  }, []);
+
+  const handleResetSceneCalibration = useCallback(() => {
+    const fresh = resetPersistedSceneCalibration();
+    setSceneCalibration(fresh);
+  }, []);
+
   const handleManualRemoveInactive = useCallback(() => {
     return tiktokEventManager.removeInactiveParticipantsManual();
   }, []);
@@ -424,6 +446,7 @@ export default function App() {
             activeXinXamVisual={congregation.activeXinXamVisual}
             floatingLanternCount={congregation.floatingLanternCount}
             overlaySettings={overlaySettings}
+            sceneCalibration={sceneCalibration}
             currentSpeakerUserId={voiceSnapshot.currentSpeakerUserId}
             onBuddhaModelStatus={handleBuddhaModelStatus}
           />
@@ -489,6 +512,7 @@ export default function App() {
             activeXinXamVisual={congregation.activeXinXamVisual}
             floatingLanternCount={congregation.floatingLanternCount}
             overlaySettings={overlaySettings}
+            sceneCalibration={sceneCalibration}
             currentSpeakerUserId={voiceSnapshot.currentSpeakerUserId}
             onBuddhaModelStatus={handleBuddhaModelStatus}
           />
@@ -560,6 +584,7 @@ export default function App() {
           voiceSettings={voiceSettings}
           voiceSnapshot={voiceSnapshot}
           overlaySettings={overlaySettings}
+          sceneCalibration={sceneCalibration}
           buddhaModelStatus={buddhaModelStatus}
           buddhaModelDetail={buddhaModelDetail}
           onConnectTikTok={async (u) => {
@@ -592,6 +617,8 @@ export default function App() {
           onClearVoiceQueue={() => voiceManager.stopAndClearQueue()}
           onEnableAudio={handleEnableAudio}
           onUpdateOverlaySettings={handleUpdateOverlaySettings}
+          onUpdateSceneCalibration={handleUpdateSceneCalibration}
+          onResetSceneCalibration={handleResetSceneCalibration}
           onTriggerDemoXinXam={handleTriggerDemoXinXam}
           onTriggerQueueDemoXinXam={handleTriggerQueueDemoXinXam}
           onDrawRandomFortune={handleDrawRandomFortune}
@@ -634,6 +661,7 @@ export default function App() {
               voiceSettings={voiceSettings}
               voiceSnapshot={voiceSnapshot}
               overlaySettings={overlaySettings}
+              sceneCalibration={sceneCalibration}
               buddhaModelStatus={buddhaModelStatus}
               buddhaModelDetail={buddhaModelDetail}
               onConnectTikTok={async (u) => {
@@ -670,6 +698,8 @@ export default function App() {
               onClearVoiceQueue={() => voiceManager.stopAndClearQueue()}
               onEnableAudio={handleEnableAudio}
               onUpdateOverlaySettings={handleUpdateOverlaySettings}
+              onUpdateSceneCalibration={handleUpdateSceneCalibration}
+              onResetSceneCalibration={handleResetSceneCalibration}
               onTriggerDemoXinXam={handleTriggerDemoXinXam}
               onTriggerQueueDemoXinXam={handleTriggerQueueDemoXinXam}
               onDrawRandomFortune={handleDrawRandomFortune}

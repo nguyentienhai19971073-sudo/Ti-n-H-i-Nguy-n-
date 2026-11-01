@@ -31,18 +31,23 @@ import {
   Trophy,
   Save,
   Sliders,
+  Camera,
+  Image as ImageIcon,
+  Grid,
 } from 'lucide-react';
 import {
   BuddhaModelLoadStatus,
   CURATED_VIENEU_VOICES,
   ConnectionStatus,
   DEFAULT_COMMENT_VOICE_FORMULA,
+  DEFAULT_SCENE_CALIBRATION,
   GiftCalculationLogEntry,
   GiftCeremonyQueueItemSnapshot,
   GiftInterruptPolicy,
   GiftMapping,
   MeritLedgerEntry,
   QualityPreset,
+  SceneCalibrationSettings,
   ServerConnectionSnapshot,
   StreamOverlaySettings,
   TTSProviderType,
@@ -74,7 +79,17 @@ import { GiftSimulatorPanel } from './GiftSimulatorPanel';
 import { XinXamManagementPanel } from './XinXamManagementPanel';
 import { XinXamRegistrySnapshot } from '../../systems/XinXamRegistry';
 
-type AdminTab = 'demo' | 'xinxam' | 'tiktok' | 'characters' | 'gifts' | 'voice' | 'streaming';
+import { savePersistedSceneCalibration } from '../../systems/SceneCalibration';
+
+type AdminTab =
+  | 'demo'
+  | 'background'
+  | 'xinxam'
+  | 'tiktok'
+  | 'characters'
+  | 'gifts'
+  | 'voice'
+  | 'streaming';
 
 interface AdminDashboardProps {
   connectionSnapshot: ServerConnectionSnapshot;
@@ -97,6 +112,7 @@ interface AdminDashboardProps {
   voiceSettings: VoiceSettings;
   voiceSnapshot: VoiceStateSnapshot;
   overlaySettings: StreamOverlaySettings;
+  sceneCalibration?: SceneCalibrationSettings;
   buddhaModelStatus: BuddhaModelLoadStatus;
   buddhaModelDetail: string;
   onConnectTikTok: (username: string) => Promise<void>;
@@ -123,6 +139,8 @@ interface AdminDashboardProps {
   onClearVoiceQueue: () => void;
   onEnableAudio: () => void;
   onUpdateOverlaySettings: (settings: StreamOverlaySettings) => void;
+  onUpdateSceneCalibration?: (settings: SceneCalibrationSettings) => void;
+  onResetSceneCalibration?: () => void;
   onTriggerDemoXinXam: (options?: { username?: string; forcedFortuneNumber?: number }) => void;
   onTriggerQueueDemoXinXam: () => void;
   onDrawRandomFortune: () => void;
@@ -152,6 +170,7 @@ export function AdminDashboard({
   voiceSettings,
   voiceSnapshot,
   overlaySettings,
+  sceneCalibration = DEFAULT_SCENE_CALIBRATION,
   buddhaModelStatus,
   buddhaModelDetail,
   onConnectTikTok,
@@ -178,6 +197,8 @@ export function AdminDashboard({
   onClearVoiceQueue,
   onEnableAudio,
   onUpdateOverlaySettings,
+  onUpdateSceneCalibration,
+  onResetSceneCalibration,
   onTriggerDemoXinXam,
   onTriggerQueueDemoXinXam,
   onDrawRandomFortune,
@@ -213,6 +234,7 @@ export function AdminDashboard({
   );
   const [voiceSavedBanner, setVoiceSavedBanner] = useState<string | null>(null);
   const [overlaySavedBanner, setOverlaySavedBanner] = useState<string | null>(null);
+  const [calibrationSavedBanner, setCalibrationSavedBanner] = useState<string | null>(null);
   const [newPeacefulMsg, setNewPeacefulMsg] = useState('');
   const [buddhaUrlDraft, setBuddhaUrlDraft] = useState(overlaySettings.buddhaModelUrl || '');
   const [manualDepartFeedback, setManualDepartFeedback] = useState<string | null>(null);
@@ -243,6 +265,27 @@ export function AdminDashboard({
     onUpdateOverlaySettings({ ...overlaySettings });
     setOverlaySavedBanner('Đã lưu kích thước và độ trong suốt RGBA của các bảng hiển thị.');
     window.setTimeout(() => setOverlaySavedBanner(null), 3200);
+  };
+
+  const updateCal = (patch: Partial<SceneCalibrationSettings>) => {
+    const next: SceneCalibrationSettings = {
+      ...sceneCalibration,
+      ...patch,
+    };
+    onUpdateSceneCalibration?.(next);
+  };
+
+  const handleSaveCalibrationClick = () => {
+    savePersistedSceneCalibration(sceneCalibration);
+    onUpdateSceneCalibration?.({ ...sceneCalibration });
+    setCalibrationSavedBanner('Đã lưu vĩnh viễn cấu hình NỀN & CAMERA (3D Calibration).');
+    window.setTimeout(() => setCalibrationSavedBanner(null), 3200);
+  };
+
+  const handleResetCalibrationClick = () => {
+    onResetSceneCalibration?.();
+    setCalibrationSavedBanner('Đã đặt lại căn chỉnh phối cảnh về chuẩn gốc 9:16.');
+    window.setTimeout(() => setCalibrationSavedBanner(null), 3200);
   };
 
   const loadVieNeuVoices = async (mode: VieNeuMode, localUrl?: string) => {
@@ -394,6 +437,7 @@ export function AdminDashboard({
   const tabs: { id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }[] =
     [
       { id: 'demo', label: 'Demo Lễ', icon: Play },
+      { id: 'background', label: 'Nền & Camera', icon: Camera },
       { id: 'xinxam', label: 'Xin Xăm (100)', icon: Sparkles },
       {
         id: 'gifts',
@@ -2369,10 +2413,442 @@ export function AdminDashboard({
         )}
 
         {/* ==========================================================================
+            BACKGROUND & CAMERA (3D PERSPECTIVE CALIBRATION + SCENE MODE SWITCH)
+           ========================================================================== */}
+        {activeTab === 'background' && (
+          <div className="space-y-4 text-xs">
+            <div>
+              <h3 className="text-sm font-semibold text-[#ffe082]">
+                BACKGROUND &amp; CAMERA · Căn Chỉnh Phối Cảnh Nền Chùa &amp; Nhân Vật 3D
+              </h3>
+              <p className="text-[11px] text-[#cbb696] mt-1 leading-relaxed">
+                Sử dụng ảnh nền tĩnh chất lượng cao{' '}
+                <code className="text-[#ffe494]">/assets/temple-background.png</code> (9:16 không méo,
+                không viền đen, hiển thị trọn vẹn tượng Phật) kết hợp nhân vật 3D căn chuẩn theo phối
+                cảnh thảm đỏ trung tâm.
+              </p>
+            </div>
+
+            {/* SCENE MODE SWITCH: IMAGE BACKGROUND vs ORIGINAL 3D TEMPLE */}
+            <div className="rounded-xl bg-gradient-to-b from-[#2c0b13] to-[#17070a] border border-[#d4af37]/45 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <ImageIcon className="w-4 h-4 text-[#ffe082]" />
+                  <span className="font-semibold text-[#ffe082]">CHẾ ĐỘ KHÔNG GIAN CHÁNH ĐIỆN</span>
+                </div>
+                <span className="px-2 py-0.5 rounded bg-[#140508] border border-[#d4af37]/35 text-[10px] font-semibold text-[#ffe082]">
+                  {sceneCalibration.sceneMode === 'image_background'
+                    ? 'IMAGE BACKGROUND'
+                    : 'ORIGINAL 3D TEMPLE'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => updateCal({ sceneMode: 'image_background' })}
+                  className={`py-2.5 px-3 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                    sceneCalibration.sceneMode === 'image_background'
+                      ? 'bg-[#d4af37] text-[#180d06] border-[#f5d76e] shadow'
+                      : 'bg-[#1b0b0f] text-[#d8c3a4] border-white/10 hover:text-white'
+                  }`}
+                >
+                  IMAGE BACKGROUND
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => updateCal({ sceneMode: 'original_3d' })}
+                  className={`py-2.5 px-3 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                    sceneCalibration.sceneMode === 'original_3d'
+                      ? 'bg-[#d4af37] text-[#180d06] border-[#f5d76e] shadow'
+                      : 'bg-[#1b0b0f] text-[#d8c3a4] border-white/10 hover:text-white'
+                  }`}
+                >
+                  ORIGINAL 3D TEMPLE
+                </button>
+              </div>
+
+              <p className="text-[10.5px] text-[#cbb696] leading-snug">
+                Khi bật <strong>IMAGE BACKGROUND</strong>, hệ thống tự động ẩn tượng Phật 3D cũ, cột,
+                tường, đèn lồng và sàn 3D trùng lặp để chỉ hiển thị duy nhất 1 tôn tượng Đức Phật Vàng
+                từ ảnh nền.
+              </p>
+
+              {/* Alignment Guides Toggle */}
+              <label className="flex items-center justify-between gap-2 pt-2 border-t border-white/10 cursor-pointer">
+                <span className="flex items-center gap-1.5 text-[#ffe082] font-medium">
+                  <Grid className="w-3.5 h-3.5" />
+                  <span>Hiện lưới căn chỉnh phối cảnh (Scene Alignment Guides)</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={sceneCalibration.showAlignmentGuides}
+                  onChange={(e) => updateCal({ showAlignmentGuides: e.target.checked })}
+                  className="accent-[#d4af37]"
+                />
+              </label>
+            </div>
+
+            {/* 1. Background Scale & X/Y Offset */}
+            <div className="rounded-xl bg-[#1a0b0e] border border-[#d4af37]/30 p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-[#ffe082]">
+                  1. Tỷ Lệ &amp; Dịch Chuyển Ảnh Nền (Background Scale &amp; X/Y Offset)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => updateCal({ bgScale: 1.0, bgOffsetX: 0, bgOffsetY: 0 })}
+                  className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                >
+                  Chuẩn 100% · (0, 0)
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[#e6d5b8]">Background Scale (Giữ nguyên tỷ lệ)</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {Math.round(sceneCalibration.bgScale * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.85}
+                  max={1.35}
+                  step={0.01}
+                  value={sceneCalibration.bgScale}
+                  onChange={(e) => updateCal({ bgScale: Number(e.target.value) })}
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[#e6d5b8]">Offset X (%)</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {sceneCalibration.bgOffsetX.toFixed(1)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-20}
+                    max={20}
+                    step={0.5}
+                    value={sceneCalibration.bgOffsetX}
+                    onChange={(e) => updateCal({ bgOffsetX: Number(e.target.value) })}
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[#e6d5b8]">Offset Y (%)</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {sceneCalibration.bgOffsetY.toFixed(1)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-20}
+                    max={20}
+                    step={0.5}
+                    value={sceneCalibration.bgOffsetY}
+                    onChange={(e) => updateCal({ bgOffsetY: Number(e.target.value) })}
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Camera Zoom & Character Near/Far Depth Scale */}
+            <div className="rounded-xl bg-[#1a0b0e] border border-[#d4af37]/30 p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-[#ffe082]">
+                  2. Camera Zoom &amp; Kích Thước Nhân Vật Xa / Gần
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateCal({
+                      cameraZoom: DEFAULT_SCENE_CALIBRATION.cameraZoom,
+                      nearCharacterScale: DEFAULT_SCENE_CALIBRATION.nearCharacterScale,
+                      farCharacterScale: DEFAULT_SCENE_CALIBRATION.farCharacterScale,
+                    })
+                  }
+                  className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                >
+                  Đặt lại
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[#e6d5b8]">Camera Zoom</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {sceneCalibration.cameraZoom.toFixed(2)}×
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.75}
+                  max={1.35}
+                  step={0.01}
+                  value={sceneCalibration.cameraZoom}
+                  onChange={(e) => updateCal({ cameraZoom: Number(e.target.value) })}
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[#e6d5b8]">Cỡ nhân vật Gần (Near)</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {sceneCalibration.nearCharacterScale.toFixed(2)}×
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.6}
+                    max={1.55}
+                    step={0.02}
+                    value={sceneCalibration.nearCharacterScale}
+                    onChange={(e) => updateCal({ nearCharacterScale: Number(e.target.value) })}
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[#e6d5b8]">Cỡ nhân vật Xa (Far)</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {sceneCalibration.farCharacterScale.toFixed(2)}×
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.45}
+                    max={1.35}
+                    step={0.02}
+                    value={sceneCalibration.farCharacterScale}
+                    onChange={(e) => updateCal({ farCharacterScale: Number(e.target.value) })}
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Seat Area Width, Depth & Offset */}
+            <div className="rounded-xl bg-[#1a0b0e] border border-[#d4af37]/30 p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-[#ffe082]">
+                  3. Vùng Chỗ Ngồi 2 Bên Thảm Đỏ (Seat Width &amp; Depth)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateCal({
+                      seatWidthScale: 1.0,
+                      seatDepthScale: 1.0,
+                      seatOffsetZ: 0,
+                    })
+                  }
+                  className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                >
+                  Đặt lại
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[#e6d5b8]">Độ rộng hai cánh chỗ ngồi (Seat Area Width)</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {Math.round(sceneCalibration.seatWidthScale * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.7}
+                  max={1.35}
+                  step={0.02}
+                  value={sceneCalibration.seatWidthScale}
+                  onChange={(e) => updateCal({ seatWidthScale: Number(e.target.value) })}
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[#e6d5b8]">Độ sâu dãy ghế (Seat Area Depth)</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {Math.round(sceneCalibration.seatDepthScale * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.7}
+                  max={1.3}
+                  step={0.02}
+                  value={sceneCalibration.seatDepthScale}
+                  onChange={(e) => updateCal({ seatDepthScale: Number(e.target.value) })}
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[#e6d5b8]">Dịch khối chỗ ngồi Trước / Sau (Z Offset)</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {sceneCalibration.seatOffsetZ.toFixed(2)}m
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={-2.5}
+                  max={2.5}
+                  step={0.1}
+                  value={sceneCalibration.seatOffsetZ}
+                  onChange={(e) => updateCal({ seatOffsetZ: Number(e.target.value) })}
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+            </div>
+
+            {/* 4. Entrance Point & Altar Ritual Stations */}
+            <div className="rounded-xl bg-[#1a0b0e] border border-[#d4af37]/30 p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-[#ffe082]">
+                  4. Điểm Bước Vào &amp; Trạm Hành Lễ Trước Bàn Thờ
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateCal({
+                      entranceZ: DEFAULT_SCENE_CALIBRATION.entranceZ,
+                      altarStationZ: DEFAULT_SCENE_CALIBRATION.altarStationZ,
+                      altarStationSpreadX: DEFAULT_SCENE_CALIBRATION.altarStationSpreadX,
+                    })
+                  }
+                  className="text-[10.5px] text-[#ffe082] hover:underline cursor-pointer"
+                >
+                  Đặt lại
+                </button>
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="text-[#e6d5b8]">Điểm cửa vào / rời điện (Entrance Point Z)</span>
+                  <span className="font-mono-tabular text-[#ffe082]">
+                    {sceneCalibration.entranceZ.toFixed(1)}m
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={11.5}
+                  max={17.5}
+                  step={0.2}
+                  value={sceneCalibration.entranceZ}
+                  onChange={(e) => updateCal({ entranceZ: Number(e.target.value) })}
+                  className="w-full accent-[#d4af37]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[#e6d5b8]">Chiều sâu Trạm Lễ (Altar Z)</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {sceneCalibration.altarStationZ.toFixed(2)}m
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-8.95}
+                    max={-6.8}
+                    step={0.05}
+                    value={sceneCalibration.altarStationZ}
+                    onChange={(e) => updateCal({ altarStationZ: Number(e.target.value) })}
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[#e6d5b8]">Độ trải ngang Trạm Lễ</span>
+                    <span className="font-mono-tabular text-[#ffe082]">
+                      {Math.round(sceneCalibration.altarStationSpreadX * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.65}
+                    max={1.35}
+                    step={0.02}
+                    value={sceneCalibration.altarStationSpreadX}
+                    onChange={(e) => updateCal({ altarStationSpreadX: Number(e.target.value) })}
+                    className="w-full accent-[#d4af37]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Save & Reset Calibration Actions */}
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={handleSaveCalibrationClick}
+                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-[#d4af37] hover:bg-[#e5c14b] text-[#180d06] font-bold transition-colors cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Lưu Căn Chỉnh</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleResetCalibrationClick}
+                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-[#2a1218] hover:bg-[#3b1922] border border-[#d4af37]/45 text-[#ffe082] font-semibold transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset Calibration</span>
+              </button>
+            </div>
+
+            {calibrationSavedBanner && (
+              <p className="text-[11px] text-[#9ef0b4] bg-[#132918] border border-[#499e5b]/45 rounded-lg px-3 py-2">
+                {calibrationSavedBanner}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ==========================================================================
             6. STREAMING / OBS & GOLDEN BUDDHA GLB/GLTF ASSET CONFIGURATION TAB
            ========================================================================== */}
         {activeTab === 'streaming' && (
           <div className="space-y-5 text-xs">
+            <div className="flex items-center justify-between gap-2 rounded-xl bg-[#250c12] border border-[#d4af37]/40 p-3">
+              <div>
+                <p className="font-semibold text-[#ffe082]">
+                  Chế độ nền hiện tại:{' '}
+                  {sceneCalibration.sceneMode === 'image_background'
+                    ? 'IMAGE BACKGROUND (Ảnh Chùa 9:16)'
+                    : 'ORIGINAL 3D TEMPLE (Chánh Điện 3D Gốc)'}
+                </p>
+                <p className="text-[10.5px] text-[#cbb696] mt-0.5">
+                  Chuyển sang mục &ldquo;Nền &amp; Camera&rdquo; để căn chỉnh phối cảnh hoặc đổi chế độ.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('background')}
+                className="px-2.5 py-1.5 rounded-lg bg-[#d4af37] text-[#180d06] font-semibold whitespace-nowrap cursor-pointer"
+              >
+                Mở Nền &amp; Camera
+              </button>
+            </div>
+
             <div>
               <h3 className="text-sm font-semibold text-[#ffe082]">
                 Cấu Hình Khung 9:16, OBS &amp; Tôn Tượng Đức Phật Vàng 3D

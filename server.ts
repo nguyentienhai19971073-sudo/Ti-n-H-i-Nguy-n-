@@ -542,6 +542,9 @@ async function startServer() {
     });
   });
 
+  // Serve permanent static assets in /public directly (e.g. /assets/temple-background.png)
+  app.use(express.static(path.join(__dirname, 'public')));
+
   const isProd = process.env.NODE_ENV === 'production';
   if (!isProd) {
     const vite = await createViteServer({

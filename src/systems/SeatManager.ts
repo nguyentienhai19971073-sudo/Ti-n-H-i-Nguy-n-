@@ -1,5 +1,11 @@
 import * as THREE from 'three';
-import { AltarStationId, RitualActionType } from '../types/temple';
+import { AltarStationId, RitualActionType, TempleSceneMode } from '../types/temple';
+import {
+  getActiveSceneCalibration,
+  getImageCalibratedAltarStation,
+  getImageCalibratedCarpetLanes,
+  getImageCalibratedSeatPosition,
+} from './SceneCalibration';
 
 export interface SeatPosition {
   seatIndex: number;
@@ -70,11 +76,51 @@ export const ALTAR_STATIONS: Record<AltarStationId, AltarStationSpec> = {
   xin_xam_station: { id: 'xin_xam_station', x: -3.28, z: -8.92, faceRotY: Math.PI * 0.88 },
 };
 
+export function getActiveAltarStation(id: AltarStationId): AltarStationSpec {
+  const cal = getActiveSceneCalibration();
+  if (cal.sceneMode === 'image_background') {
+    const st = getImageCalibratedAltarStation(id, cal);
+    return {
+      id: st.id,
+      x: st.x,
+      z: st.z,
+      faceRotY: st.faceRotY,
+    };
+  }
+  return ALTAR_STATIONS[id];
+}
+
+export function getActiveEntranceZ(): number {
+  const cal = getActiveSceneCalibration();
+  return cal.sceneMode === 'image_background' ? cal.entranceZ : ENTRANCE_Z;
+}
+
+export function getActiveCarpetLanes(
+  side: 'left' | 'right',
+  isXinXam = false,
+): {
+  outboundLaneX: number;
+  returnLaneX: number;
+  exitLaneX: number;
+  altarApproachThresholdZ: number;
+} {
+  const cal = getActiveSceneCalibration();
+  if (cal.sceneMode === 'image_background') {
+    return getImageCalibratedCarpetLanes(side, isXinXam);
+  }
+  return {
+    outboundLaneX: isXinXam ? -0.44 : side === 'left' ? -0.38 : 0.38,
+    returnLaneX: side === 'left' ? -0.84 : 0.84,
+    exitLaneX: side === 'left' ? -0.66 : 0.66,
+    altarApproachThresholdZ: -6.9,
+  };
+}
+
 export function areAltarStationsTooClose(a: AltarStationId, b: AltarStationId): boolean {
   if (a === b) return true;
-  const sa = ALTAR_STATIONS[a];
-  const sb = ALTAR_STATIONS[b];
-  return Math.hypot(sa.x - sb.x, sa.z - sb.z) < 0.92;
+  const sa = getActiveAltarStation(a);
+  const sb = getActiveAltarStation(b);
+  return Math.hypot(sa.x - sb.x, sa.z - sb.z) < 0.85;
 }
 
 export function getCandidateStationsForRitual(
@@ -189,7 +235,24 @@ export function getAllMainMats(): SeatPosition[] {
   return PRECOMPUTED_SEATS.slice(0, TOTAL_MAIN_MATS);
 }
 
-export function getSeatPosition(seatIndex: number): SeatPosition {
+export function getSeatPosition(seatIndex: number, forceMode?: TempleSceneMode): SeatPosition {
+  const cal = getActiveSceneCalibration();
+  const mode = forceMode || cal.sceneMode;
+  if (mode === 'image_background') {
+    const imgSeat = getImageCalibratedSeatPosition(seatIndex, cal);
+    const colIdx =
+      imgSeat.side === 'left' ? imgSeat.col : MAIN_SEAT_COLS_PER_SIDE + imgSeat.col;
+    return {
+      seatIndex: imgSeat.seatIndex,
+      row: imgSeat.row,
+      col: colIdx,
+      side: imgSeat.side,
+      x: imgSeat.x,
+      z: imgSeat.z,
+      aisleZ: imgSeat.aisleZ,
+      isOverflow: imgSeat.isOverflow,
+    };
+  }
   if (seatIndex >= 0 && seatIndex < PRECOMPUTED_SEATS.length) {
     return PRECOMPUTED_SEATS[seatIndex];
   }

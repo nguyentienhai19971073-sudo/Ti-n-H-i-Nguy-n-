@@ -33,10 +33,11 @@ import {
   sanitizeCeremonialText,
 } from '../types/temple';
 import {
-  ALTAR_STATIONS,
   SeatManager,
   TOTAL_MAIN_MATS,
   areAltarStationsTooClose,
+  getActiveAltarStation,
+  getActiveCarpetLanes,
   getCandidateStationsForRitual,
   getSeatPosition,
 } from './SeatManager';
@@ -842,8 +843,8 @@ export class TikTokEventManager {
         const nextXinXam = this.xinXamResultQueue.shift();
         if (nextXinXam) {
           const dispMs = Math.max(
-            2600,
-            Math.min(10000, xinXamRegistry.getSettings().resultDisplayDurationMs || 5200),
+            3000,
+            Math.min(15000, xinXamRegistry.getSettings().resultDisplayDurationMs || 8000),
           );
           this.activeXinXamResult = {
             ...nextXinXam,
@@ -1637,7 +1638,10 @@ export class TikTokEventManager {
         ...draw,
         expiresAt:
           now +
-          Math.max(2600, Math.min(10000, xinXamRegistry.getSettings().resultDisplayDurationMs)),
+          Math.max(
+            3000,
+            Math.min(15000, xinXamRegistry.getSettings().resultDisplayDurationMs || 8000),
+          ),
       });
       this.advanceCenterAnnouncementQueue(now);
     }
@@ -1884,7 +1888,7 @@ export class TikTokEventManager {
       const chosenStationId = candidates.find((st) => this.isStationAvailable(st));
       if (!chosenStationId) continue;
 
-      const station = ALTAR_STATIONS[chosenStationId];
+      const station = getActiveAltarStation(chosenStationId);
       this.occupiedStations.set(chosenStationId, p.userId);
       this.ritualQueue.splice(i, 1);
       i--;
@@ -1897,10 +1901,10 @@ export class TikTokEventManager {
         this.woodenFishSafetyTimers.delete(prevActId);
       }
 
-      // Dedicated separate outbound (±0.38) and inbound return (±0.84) carpet lanes prevent aisle collisions
-      const outboundLaneX =
-        stationLookupType === 'xin_xam' ? -0.44 : seat.side === 'left' ? -0.38 : 0.38;
-      const returnLaneX = seat.side === 'left' ? -0.84 : 0.84;
+      // Dedicated separate outbound and inbound return carpet lanes prevent aisle collisions
+      const lanes = getActiveCarpetLanes(seat.side, stationLookupType === 'xin_xam');
+      const outboundLaneX = lanes.outboundLaneX;
+      const returnLaneX = lanes.returnLaneX;
 
       const activeRitual: ActiveCharacterRitual = {
         id: item.id,
@@ -2668,8 +2672,8 @@ export class TikTokEventManager {
     if (!draw) return null;
 
     const dispMs = Math.max(
-      3500,
-      Math.min(10000, xinXamRegistry.getSettings().resultDisplayDurationMs || 6800),
+      3000,
+      Math.min(15000, xinXamRegistry.getSettings().resultDisplayDurationMs || 8000),
     );
     this.activeCenterAnnouncement = null;
     this.activeXinXamResult = {

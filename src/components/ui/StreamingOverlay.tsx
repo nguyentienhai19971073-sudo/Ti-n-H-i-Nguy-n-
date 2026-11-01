@@ -142,12 +142,14 @@ export function StreamingOverlay({
       />
 
       {/* ==========================================================================
-          COMPACT XIN XĂM RESULT PANEL ("🪷 XIN XĂM CẦU NGUYỆN" — Single-Line QUẺ XĂM XX)
+          COMPACT LOWER-MIDDLE XIN XĂM RESULT POPUP ("🪷 KẾT QUẢ XIN XĂM")
          ========================================================================== */}
       <XinXamResultPanel
         result={overlaySettings.showXinXamPanel !== false ? activeXinXamResult : null}
-        panelOpacity={xinXamPanelOpacity ?? panelOpacity}
-        panelScale={xinXamPanelScale ?? panelScale}
+        panelOpacity={xinXamPanelOpacity ?? xinXamSettings?.panelOpacity ?? 0.55}
+        panelScale={xinXamPanelScale ?? xinXamSettings?.panelScale ?? 1.0}
+        displayMode={xinXamSettings?.displayMode ?? 'compact'}
+        textScale={xinXamSettings?.textScale ?? 1.0}
         showAvatar={overlaySettings.showAvatarInCenterPanel !== false}
       />
 

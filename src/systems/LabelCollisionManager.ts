@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TempleSceneMode } from '../types/temple';
 import { SANCTUARY_BUDDHA_BOUNDS } from './SeatManager';
 
 export interface ScreenRect {
@@ -55,6 +56,7 @@ export interface LabelLayoutOptions {
   showLeaderboard?: boolean;
   showGiftPanel?: boolean;
   commentDurationMs?: number;
+  sceneMode?: TempleSceneMode;
 }
 
 export interface LabelLayoutResult {
@@ -172,6 +174,7 @@ export function solveLabelAndBubbleLayout(
     showLeaderboard = false,
     showGiftPanel = false,
     commentDurationMs = 5000,
+    sceneMode = 'original_3d',
   } = options;
 
   const halfW = viewportWidth * 0.5;
@@ -181,55 +184,77 @@ export function solveLabelAndBubbleLayout(
   const topSafeY = Math.max(36, 40 * scale);
   const bottomSafeY = Math.min(viewportHeight - 10, viewportHeight - 36 * scale);
 
-  // 1. Project Golden Buddha Statue Exclusion Zone (head halo crown -> lotus pedestal)
-  _bTop
-    .set(
-      SANCTUARY_BUDDHA_BOUNDS.centerX,
-      SANCTUARY_BUDDHA_BOUNDS.haloTopY,
-      SANCTUARY_BUDDHA_BOUNDS.centerZ,
-    )
-    .project(camera);
-  _bBot
-    .set(
-      SANCTUARY_BUDDHA_BOUNDS.centerX,
-      SANCTUARY_BUDDHA_BOUNDS.pedestalBottomY,
-      SANCTUARY_BUDDHA_BOUNDS.centerZ,
-    )
-    .project(camera);
-  _bSide
-    .set(
-      SANCTUARY_BUDDHA_BOUNDS.halfWidthX,
-      (SANCTUARY_BUDDHA_BOUNDS.haloTopY + SANCTUARY_BUDDHA_BOUNDS.pedestalBottomY) * 0.5,
-      SANCTUARY_BUDDHA_BOUNDS.centerZ,
-    )
-    .project(camera);
+  let buddhaExclusionRect: ScreenRect;
+  let altarExclusionRect: ScreenRect;
+  let buddhaCenterX = halfW;
 
-  const buddhaCenterX = _bTop.x * halfW + halfW;
-  const buddhaHalfPxW = Math.abs(_bSide.x * halfW + halfW - buddhaCenterX) + 6;
-  const bY1 = -_bTop.y * halfH + halfH;
-  const bY2 = -_bBot.y * halfH + halfH;
-  const buddhaExclusionRect: ScreenRect = {
-    left: buddhaCenterX - buddhaHalfPxW,
-    right: buddhaCenterX + buddhaHalfPxW,
-    top: Math.min(bY1, bY2) - 4,
-    bottom: Math.max(bY1, bY2) + 4,
-  };
+  if (sceneMode === 'image_background') {
+    // Exact painted Golden Buddha (halo + head + body + lotus pedestal: x = 22%..78%, y = 10%..45.5%)
+    // and Carved Wooden Offering Altar (x = 14%..86%, y = 45.2%..58.5%) in `/assets/temple-background.png`
+    buddhaExclusionRect = {
+      left: viewportWidth * 0.22,
+      right: viewportWidth * 0.78,
+      top: viewportHeight * 0.1,
+      bottom: viewportHeight * 0.455,
+    };
+    altarExclusionRect = {
+      left: viewportWidth * 0.18,
+      right: viewportWidth * 0.82,
+      top: viewportHeight * 0.452,
+      bottom: viewportHeight * 0.578,
+    };
+  } else {
+    // 1. Project Golden Buddha Statue Exclusion Zone (head halo crown -> lotus pedestal)
+    _bTop
+      .set(
+        SANCTUARY_BUDDHA_BOUNDS.centerX,
+        SANCTUARY_BUDDHA_BOUNDS.haloTopY,
+        SANCTUARY_BUDDHA_BOUNDS.centerZ,
+      )
+      .project(camera);
+    _bBot
+      .set(
+        SANCTUARY_BUDDHA_BOUNDS.centerX,
+        SANCTUARY_BUDDHA_BOUNDS.pedestalBottomY,
+        SANCTUARY_BUDDHA_BOUNDS.centerZ,
+      )
+      .project(camera);
+    _bSide
+      .set(
+        SANCTUARY_BUDDHA_BOUNDS.halfWidthX,
+        (SANCTUARY_BUDDHA_BOUNDS.haloTopY + SANCTUARY_BUDDHA_BOUNDS.pedestalBottomY) * 0.5,
+        SANCTUARY_BUDDHA_BOUNDS.centerZ,
+      )
+      .project(camera);
 
-  // 2. Project Central Elevated Incense Altar Table Exclusion Zone (strictly within central aisle |x| <= 1.32)
-  _aTop.set(0, 4.45, -10.8).project(camera);
-  _aBot.set(0, 0.45, -10.0).project(camera);
-  _aSide.set(1.32, 2.55, -10.4).project(camera);
+    buddhaCenterX = _bTop.x * halfW + halfW;
+    const buddhaHalfPxW = Math.abs(_bSide.x * halfW + halfW - buddhaCenterX) + 6;
+    const bY1 = -_bTop.y * halfH + halfH;
+    const bY2 = -_bBot.y * halfH + halfH;
 
-  const altarCenterX = _aTop.x * halfW + halfW;
-  const altarHalfPxW = Math.abs(_aSide.x * halfW + halfW - altarCenterX) + 2;
-  const aY1 = -_aTop.y * halfH + halfH;
-  const aY2 = -_aBot.y * halfH + halfH;
-  const altarExclusionRect: ScreenRect = {
-    left: altarCenterX - altarHalfPxW,
-    right: altarCenterX + altarHalfPxW,
-    top: Math.min(aY1, aY2),
-    bottom: Math.max(aY1, aY2),
-  };
+    buddhaExclusionRect = {
+      left: buddhaCenterX - buddhaHalfPxW,
+      right: buddhaCenterX + buddhaHalfPxW,
+      top: Math.min(bY1, bY2) - 4,
+      bottom: Math.max(bY1, bY2) + 4,
+    };
+
+    // 2. Project Central Elevated Incense Altar Table Exclusion Zone (strictly within central aisle |x| <= 1.32)
+    _aTop.set(0, 4.45, -10.8).project(camera);
+    _aBot.set(0, 0.45, -10.0).project(camera);
+    _aSide.set(1.32, 2.55, -10.4).project(camera);
+
+    const altarCenterX = _aTop.x * halfW + halfW;
+    const altarHalfPxW = Math.abs(_aSide.x * halfW + halfW - altarCenterX) + 2;
+    const aY1 = -_aTop.y * halfH + halfH;
+    const aY2 = -_aBot.y * halfH + halfH;
+    altarExclusionRect = {
+      left: altarCenterX - altarHalfPxW,
+      right: altarCenterX + altarHalfPxW,
+      top: Math.min(aY1, aY2),
+      bottom: Math.max(aY1, aY2),
+    };
+  }
 
   // Optional corner HUD panel exclusion zones so labels never collide with edge panels
   const hudExclusionRects: ScreenRect[] = [buddhaExclusionRect, altarExclusionRect];

@@ -7,6 +7,7 @@ import {
   DEFAULT_COMMENT_VOICE_FORMULA,
   DEFAULT_GIFT_MAPPINGS,
   DEFAULT_OVERLAY_SETTINGS,
+  DEFAULT_SCENE_CALIBRATION,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_XIN_XAM_SETTINGS,
   DEFAULT_XIN_XAM_VOICE_TEMPLATE,
@@ -23,6 +24,17 @@ import {
   sanitizeCeremonialText,
   vietnameseNumberToWords,
 } from '../types/temple';
+import {
+  IMAGE_BG_CAMERA_BASE,
+  computeCharacterDepthScale,
+  configureImageBackgroundCamera,
+  getActiveSceneCalibration,
+  getImageCalibratedAltarStation,
+  getImageCalibratedSeatPosition,
+  resetPersistedSceneCalibration,
+  setActiveSceneCalibration,
+  verifyImageModeFraming916,
+} from '../systems/SceneCalibration';
 import {
   ALTAR_STATIONS,
   BUDDHA_ELEVATION_Y,
@@ -1541,6 +1553,259 @@ runTest('18. Unified "CÚNG DƯỜNG CẦU AN" ascending coin order, zero trunca
   );
 });
 
-console.log('\n🎉 ALL 18 CHÙA ONLINE LIVESTREAM & XIN XĂM UPGRADE TESTS PASSED SUCCESSFULLY!');
+// ============================================================================
+// 19. PERMANENT TEMPLE BACKGROUND ASSET (1080x1920), SINGLE-BUDDHA MODE SWITCH & 9:16 PERSPECTIVE CALIBRATION
+// ============================================================================
+runTest('19. Permanent /public/assets/temple-background.png (1080x1920), single-Buddha mode switch & calibrated 9:16 floor perspective', () => {
+  const permanentAssetPath = path.resolve(process.cwd(), 'public/assets/temple-background.png');
+  const uploadedSourcePath = path.resolve(
+    process.cwd(),
+    'public/assets/aistudio/chua_online_background_1080x1920_caa936e8.png',
+  );
+
+  assert.equal(
+    fs.existsSync(permanentAssetPath),
+    true,
+    'public/assets/temple-background.png must exist permanently',
+  );
+  const bgBuf = fs.readFileSync(permanentAssetPath);
+  assert.ok(bgBuf.length > 500_000, 'temple-background.png must be a high-resolution PNG asset');
+
+  // Verify PNG magic signature + exact 1080x1920 IHDR dimensions (zero distortion / exact 9:16)
+  assert.equal(bgBuf[0], 0x89, 'Valid PNG signature byte 0');
+  assert.equal(bgBuf.toString('ascii', 1, 4), 'PNG', 'Valid PNG header');
+  const imgWidth = bgBuf.readUInt32BE(16);
+  const imgHeight = bgBuf.readUInt32BE(20);
+  assert.equal(imgWidth, 1080, 'Background width must be 1080px');
+  assert.equal(imgHeight, 1920, 'Background height must be 1920px (9:16)');
+
+  if (fs.existsSync(uploadedSourcePath)) {
+    const srcBuf = fs.readFileSync(uploadedSourcePath);
+    assert.equal(
+      Buffer.compare(bgBuf, srcBuf),
+      0,
+      'public/assets/temple-background.png must match the exact uploaded image byte-for-byte',
+    );
+  }
+
+  // Verify default mode is IMAGE BACKGROUND and hides old procedural BuddhaAltar + TempleEnvironment
+  assert.equal(
+    DEFAULT_SCENE_CALIBRATION.sceneMode,
+    'image_background',
+    'Default sceneMode must be image_background',
+  );
+  assert.equal(
+    DEFAULT_SCENE_CALIBRATION.backgroundUrl,
+    '/assets/temple-background.png',
+    'Default backgroundUrl must point to /assets/temple-background.png',
+  );
+
+  const templeSceneSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/three/TempleScene.tsx'),
+    'utf8',
+  );
+  assert.ok(
+    templeSceneSrc.includes('/assets/temple-background.png'),
+    'TempleScene renders /assets/temple-background.png',
+  );
+  assert.ok(
+    templeSceneSrc.includes('isImageBackgroundMode ?') &&
+      templeSceneSrc.includes('<TempleEnvironment') &&
+      templeSceneSrc.includes('<BuddhaAltar'),
+    'TempleScene hides procedural TempleEnvironment and BuddhaAltar in IMAGE BACKGROUND mode while preserving ORIGINAL 3D TEMPLE mode',
+  );
+
+  // Verify 9:16 perspective alignment of 104 seats, red carpet rails, altar boundary, and near/far character scaling
+  const framing = verifyImageModeFraming916(DEFAULT_SCENE_CALIBRATION);
+  assert.equal(
+    framing.allSeatsInside916,
+    true,
+    `All 104 calibrated seats must stay strictly inside 9:16 frame (ndcX: ${framing.minSeatNdcX.toFixed(3)}..${framing.maxSeatNdcX.toFixed(3)}, footNdcY max: ${framing.maxSeatFootNdcY.toFixed(3)})`,
+  );
+  assert.equal(
+    framing.allSeatsClearOfCarpet,
+    true,
+    'Central red carpet must remain completely clear for ceremonial walking paths',
+  );
+  assert.equal(
+    framing.allSeatsBelowAltar,
+    true,
+    'Zero worshippers may sit on the wooden offering altar or Golden Buddha statue',
+  );
+  assert.equal(
+    framing.allStationsBelowAltar,
+    true,
+    'All 14 designated altar ritual stations sit in front of the wooden altar base, never on the altar',
+  );
+  assert.ok(
+    framing.minSeatNdcY <= -0.78,
+    `Foreground worshippers extend close to the bottom of the 9:16 screen (minSeatNdcY=${framing.minSeatNdcY.toFixed(3)})`,
+  );
+  assert.ok(
+    framing.minPairwiseSeatDist >= 0.35,
+    `Adjacent seats never overlap (minPairwiseSeatDist=${framing.minPairwiseSeatDist.toFixed(3)}m)`,
+  );
+  assert.ok(
+    framing.nearScale > framing.farScale,
+    `Characters near bottom scale larger than distant characters near altar (${framing.nearScale.toFixed(2)} > ${framing.farScale.toFixed(2)})`,
+  );
+
+  // Verify red carpet perspective rails match painted carpet (~0.25 NDC at altar base widening to ~0.77 at bottom)
+  assert.ok(
+    framing.carpetTopAbsNdcX >= 0.21 && framing.carpetTopAbsNdcX <= 0.29,
+    `Top of red carpet matches painted altar base width (|ndcX|=${framing.carpetTopAbsNdcX.toFixed(3)})`,
+  );
+  assert.ok(
+    framing.carpetBottomAbsNdcX >= 0.72 && framing.carpetBottomAbsNdcX <= 0.85,
+    `Bottom of red carpet matches painted foreground width (|ndcX|=${framing.carpetBottomAbsNdcX.toFixed(3)})`,
+  );
+});
+
+// ============================================================================
+// 20. ADMIN CALIBRATION CONTROLS, MODE SWITCH, IMAGE-MODE LABEL EXCLUSION & FULL CEREMONIES
+// ============================================================================
+runTest('20. Admin calibration controls, mode switch, painted Buddha label exclusion & full ritual compatibility', () => {
+  // 1) Test live calibration updates & Reset Calibration
+  setActiveSceneCalibration({
+    sceneMode: 'image_background',
+    bgScale: 1.08,
+    bgOffsetX: 2.5,
+    bgOffsetY: -1.5,
+    cameraZoom: 1.06,
+    seatWidthScale: 1.05,
+    seatDepthScale: 0.96,
+    nearCharacterScale: 1.15,
+    farCharacterScale: 0.8,
+    entranceZ: 15.4,
+    altarStationZ: -8.0,
+    showAlignmentGuides: true,
+  });
+
+  const updatedCal = getActiveSceneCalibration();
+  assert.equal(updatedCal.bgScale, 1.08);
+  assert.equal(updatedCal.cameraZoom, 1.06);
+  assert.equal(updatedCal.showAlignmentGuides, true);
+  assert.ok(
+    computeCharacterDepthScale(13.0, updatedCal) > computeCharacterDepthScale(-7.5, updatedCal),
+  );
+
+  // Verify SeatManager switches cleanly between image_background and original_3d
+  const imgSeat0 = getSeatPosition(0);
+  const origSeat0 = getSeatPosition(0, 'original_3d');
+  assert.equal(imgSeat0.side, 'left');
+  assert.equal(origSeat0.side, 'left');
+  assert.notEqual(
+    imgSeat0.x,
+    origSeat0.x,
+    'Image background mode uses calibrated perspective X distinct from procedural 3D grid',
+  );
+
+  // Switch to ORIGINAL 3D TEMPLE mode and verify original coordinates are used
+  setActiveSceneCalibration({ sceneMode: 'original_3d' });
+  assert.equal(getSeatPosition(0).x, origSeat0.x, 'ORIGINAL 3D TEMPLE mode restores exact 3D seat X');
+
+  // Reset calibration restores image_background defaults
+  const resetCal = resetPersistedSceneCalibration();
+  assert.equal(resetCal.sceneMode, 'image_background');
+  assert.equal(resetCal.bgScale, 1.0);
+  assert.equal(resetCal.cameraZoom, 1.0);
+  assert.equal(resetCal.showAlignmentGuides, false);
+
+  // 2) Verify LabelCollisionManager protects the painted Golden Buddha & Wooden Altar in image_background mode
+  const imgCam = new THREE.PerspectiveCamera(42, 9 / 16, 0.25, 110);
+  configureImageBackgroundCamera(imgCam, 9 / 16, resetCal);
+  const imgCandidates: LabelCandidateInput[] = Array.from({ length: 40 }, (_, i) => {
+    const s = getImageCalibratedSeatPosition(i, resetCal);
+    const sc = computeCharacterDepthScale(s.z, resetCal);
+    return {
+      userId: `img-u-${i}`,
+      username: `phattu.sen.${i + 1}`,
+      worldX: s.x,
+      worldY: 0,
+      worldZ: s.z,
+      headY: 1.12 * sc,
+      lastComment: i % 5 === 0 ? 'Nam mô A Di Đà Phật cầu bình an' : undefined,
+      lastCommentAt: i % 5 === 0 ? Date.now() - 800 : undefined,
+      isSpeaking: i === 0,
+      isCeremonyActor: i === 1,
+      isRecentlyActive: i < 12,
+      seatIndex: i,
+    };
+  });
+
+  const imgLayout = solveLabelAndBubbleLayout(imgCandidates, imgCam, {
+    viewportWidth: 540,
+    viewportHeight: 960,
+    now: Date.now(),
+    showUsernames: true,
+    showCommentBubbles: true,
+    sceneMode: 'image_background',
+  });
+
+  for (const item of imgLayout.items) {
+    if (item.nameVisible && item.nameRect) {
+      assert.equal(
+        screenRectsOverlap(item.nameRect, imgLayout.buddhaExclusionRect),
+        false,
+        'Name label must never cover the painted Golden Buddha in image_background mode',
+      );
+    }
+    if (item.bubbleVisible && item.bubbleRect) {
+      assert.equal(
+        screenRectsOverlap(item.bubbleRect, imgLayout.buddhaExclusionRect),
+        false,
+        'Comment bubble must never cover the painted Golden Buddha in image_background mode',
+      );
+    }
+  }
+
+  // 3) Verify TikTok ceremony + Xin Xăm dispatch in image_background mode targets calibrated altar stations
+  const mgr = new TikTokEventManager();
+  mgr.clearParticipants(true);
+  voiceManager.updateSettings({ ...DEFAULT_VOICE_SETTINGS, autoNarrationEnabled: false });
+
+  const draw = mgr.triggerXinXamForUser({
+    userId: 'u-img-xam',
+    username: 'minh.anh',
+    nickname: 'Minh Anh',
+    forcedFortuneNumber: 18,
+    isDemo: true,
+    now: Date.now(),
+  });
+  assert.ok(draw, 'Xin Xăm triggers cleanly in image_background mode');
+  const activeParticipant = mgr
+    .getSnapshot()
+    .participants.find((p) => p.userId === 'u-img-xam');
+  const expectedXinXamSt = getImageCalibratedAltarStation('xin_xam_station', resetCal);
+  assert.equal(
+    activeParticipant?.activeRitual?.targetX,
+    expectedXinXamSt.x,
+    'Xin Xăm worshipper walks to calibrated floor station X in image_background mode',
+  );
+  assert.equal(
+    activeParticipant?.activeRitual?.targetZ,
+    expectedXinXamSt.z,
+    'Xin Xăm worshipper walks to calibrated floor station Z in front of painted altar',
+  );
+  assert.ok(
+    expectedXinXamSt.z > IMAGE_BG_CAMERA_BASE.altarFloorEdgeZ,
+    'Calibrated Xin Xăm station is strictly in front of the wooden altar base',
+  );
+
+  // Verify AdminDashboard exposes IMAGE BACKGROUND, ORIGINAL 3D TEMPLE, and Reset Calibration controls
+  const adminSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/ui/AdminDashboard.tsx'),
+    'utf8',
+  );
+  assert.ok(adminSrc.includes('IMAGE BACKGROUND'), 'AdminDashboard includes IMAGE BACKGROUND switch');
+  assert.ok(adminSrc.includes('ORIGINAL 3D TEMPLE'), 'AdminDashboard includes ORIGINAL 3D TEMPLE switch');
+  assert.ok(adminSrc.includes('Reset Calibration'), 'AdminDashboard includes Reset Calibration button');
+
+  mgr.clearParticipants(true);
+  voiceManager.updateSettings({ ...DEFAULT_VOICE_SETTINGS });
+});
+
+console.log('\n🎉 ALL 20 CHÙA ONLINE LIVESTREAM, XIN XĂM & IMAGE-BACKGROUND CALIBRATION TESTS PASSED!');
+
 
 

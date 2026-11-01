@@ -253,11 +253,11 @@ export function BuddhistGiftPanel({
     <aside
       aria-label="Cúng Dường Cầu An"
       style={panelStyle}
-      className="w-[142px] sm:w-[158px] rounded border pointer-events-auto"
+      className="w-[clamp(148px,23vw,182px)] rounded border pointer-events-auto"
     >
       {/* Compact Burgundy & Gold Lotus Header */}
-      <div style={headerStyle} className="px-1.5 py-1 border-b text-center rounded-t">
-        <div className="flex items-center justify-center gap-1">
+      <div style={headerStyle} className="px-1.5 py-[3px] border-b text-center rounded-t">
+        <div className="flex items-center justify-center gap-1 min-w-0">
           <svg
             viewBox="0 0 24 24"
             className="w-2.5 h-2.5 text-[#ffa6c9] shrink-0 fill-current"
@@ -265,14 +265,14 @@ export function BuddhistGiftPanel({
           >
             <path d="M12 3C10.2 6.2 8.5 8.8 8.5 11.4C8.5 13.5 10 15.2 12 15.8C14 15.2 15.5 13.5 15.5 11.4C15.5 8.8 13.8 6.2 12 3ZM5.2 9.5C4.8 12.2 6 14.8 8.8 16.1C7.6 14.3 7.2 12.1 7.6 10.2C6.8 9.9 6 9.7 5.2 9.5ZM18.8 9.5C18 9.7 17.2 9.9 16.4 10.2C16.8 12.1 16.4 14.3 15.2 16.1C18 14.8 19.2 12.2 18.8 9.5ZM4 16.8C6.6 18.8 9.3 19.5 12 19.5C14.7 19.5 17.4 18.8 20 16.8C17.2 16.9 14.6 17.4 12 18.2C9.4 17.4 6.8 16.9 4 16.8Z" />
           </svg>
-          <h2 className="font-display text-[8.5px] sm:text-[9px] font-bold tracking-wider text-[#ffe89e] leading-snug whitespace-normal break-words">
+          <h2 className="font-display text-[clamp(8.5px,1.15vw,10px)] font-bold tracking-wide text-[#ffe89e] leading-tight whitespace-nowrap">
             CÚNG DƯỜNG CẦU AN
           </h2>
         </div>
       </div>
 
       {/* Complete Unwrapped Ceremonial Event Rows Sorted Ascending by Coin Value */}
-      <div className="divide-y divide-[#d4af37]/15 px-1.5 py-0.5 max-h-[246px] overflow-y-auto temple-scroll">
+      <div className="divide-y divide-[#d4af37]/15 px-1 py-0.5 max-h-[252px] overflow-y-auto temple-scroll">
         {sortedOfferings.map((item) => {
           const isXinXam = item.kind === 'xin_xam';
           const count = isXinXam
@@ -313,11 +313,11 @@ export function BuddhistGiftPanel({
                     }
                   : undefined
               }
-              className={`h-auto flex items-start justify-between gap-1.5 py-1 px-0.5 rounded transition-colors ${
+              className={`h-auto flex items-start gap-1 py-[3px] px-0.5 rounded transition-colors ${
                 canClickDemo ? 'hover:bg-[#5c1622]/45 cursor-pointer' : ''
               }`}
             >
-              <div className="pt-0.5 shrink-0">
+              <div className="pt-[2px] shrink-0">
                 <GiftVisualIcon
                   gift={{
                     iconType: item.iconType,
@@ -325,33 +325,31 @@ export function BuddhistGiftPanel({
                     uploadedImageData: item.uploadedImageData,
                     vietnameseLabel: item.vietnameseLabel,
                   }}
-                  sizeClass="w-3.5 h-3.5"
+                  sizeClass="w-3 h-3"
                 />
               </div>
 
-              <div className="flex-1 min-w-0 leading-snug">
-                <p className="font-display text-[8px] sm:text-[8.5px] font-bold tracking-wide text-[#ffe89e] whitespace-normal break-words">
-                  {item.ceremonyTitle}
-                </p>
-                <p className="text-[7.5px] sm:text-[8px] text-[#fff3e0] whitespace-normal break-words mt-[1px]">
-                  <span className="font-medium">{item.vietnameseLabel}</span>
-                  <span className="text-[#d4af37]/80"> · </span>
-                  <span className="font-mono-tabular font-semibold text-[#ffd978] whitespace-nowrap">
+              <div className="flex-1 w-full min-w-0 leading-[1.26]">
+                <div className="flex items-baseline justify-between gap-1 w-full min-w-0">
+                  <p className="font-display text-[clamp(8px,1.08vw,9.5px)] font-bold tracking-[0.02em] text-[#ffe89e] whitespace-normal break-words [word-break:normal] min-w-0">
+                    {item.ceremonyTitle}
+                  </p>
+                  <span className="font-mono-tabular text-[clamp(7.5px,1vw,8.8px)] font-semibold text-[#ffd978] whitespace-nowrap shrink-0">
                     {item.referenceCoins} xu
                   </span>
-                </p>
-              </div>
-
-              {count > 0 && (
-                <div
-                  style={{ backgroundColor: 'rgba(18, 5, 8, 0.48)' }}
-                  className="shrink-0 mt-0.5 px-1 py-[1px] rounded border border-[#d4af37]/35 text-center"
-                >
-                  <span className="font-mono-tabular text-[7.5px] font-bold text-[#ffe699] leading-none whitespace-nowrap">
-                    {count}
-                  </span>
                 </div>
-              )}
+
+                <div className="flex items-baseline justify-between gap-1 w-full min-w-0 mt-[1px]">
+                  <p className="text-[clamp(7.5px,1.02vw,8.8px)] text-[#fff3e0] font-medium whitespace-normal break-words [word-break:normal] min-w-0">
+                    {item.vietnameseLabel}
+                  </p>
+                  {count > 0 && (
+                    <span className="font-mono-tabular text-[clamp(7px,0.95vw,8px)] font-bold text-[#ffe699]/90 whitespace-nowrap shrink-0">
+                      ×{count}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
           );
         })}

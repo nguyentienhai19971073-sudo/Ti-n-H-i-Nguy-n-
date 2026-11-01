@@ -241,6 +241,51 @@ export const DEFAULT_XIN_XAM_VOICE_TEMPLATE =
 export const LEGACY_V1_XIN_XAM_VOICE_TEMPLATE =
   'Phật tử {username} xin được quẻ xăm số {fortuneNumber}, {fortuneTitle}. {interpretation}';
 
+export type XinXamPopupDisplayMode = 'compact' | 'detailed';
+
+/**
+ * Normalizes single-line or prose Vietnamese fortune text by collapsing accidental
+ * internal newlines/tabs into spaces (never forcing arbitrary line breaks in titles or interpretations).
+ */
+export function normalizeSingleFlowVietnameseText(raw: string): string {
+  return String(raw || '')
+    .normalize('NFC')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Preserves ONLY intentional line breaks in traditional 2–4 line Vietnamese fortune verses,
+ * trimming each verse line cleanly without collapsing poetic couplets.
+ */
+export function formatTraditionalVerseLines(rawVerse: string, maxLines = 4): string {
+  const lines = String(rawVerse || '')
+    .normalize('NFC')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s{2,}/g, ' ').trim())
+    .filter(Boolean);
+  return lines.slice(0, Math.max(1, maxLines)).join('\n');
+}
+
+/**
+ * Extracts a concise single-sentence excerpt (at clean Vietnamese word boundaries, never mid-word)
+ * for the compact livestream fortune popup while keeping the complete text in state & VieNeuTTS.
+ */
+export function extractConciseVietnameseSentence(rawText: string, maxChars = 115): string {
+  const normalized = normalizeSingleFlowVietnameseText(rawText);
+  if (!normalized) return '';
+  const sentenceMatch = normalized.match(/^[^.!?…]+[.!?…]?/u);
+  const candidate = sentenceMatch ? sentenceMatch[0].trim() : normalized;
+  if (candidate.length <= maxChars) {
+    return /[.!?…]$/u.test(candidate) ? candidate : `${candidate}.`;
+  }
+  const sliced = candidate.slice(0, maxChars);
+  const lastSpace = sliced.lastIndexOf(' ');
+  const wordSafe = (lastSpace > 24 ? sliced.slice(0, lastSpace) : sliced).replace(/[,;:\s]+$/u, '');
+  return `${wordSafe}…`;
+}
+
 export interface XinXamSettings {
   enabled: boolean;
   /** Editable event title shown in "CÚNG DƯỜNG CẦU AN" (default: "XIN XĂM") */
@@ -260,12 +305,16 @@ export interface XinXamSettings {
   particleDensity: number;
   /** Total 3D ceremony duration at the Xin Xăm station in seconds (default 6.2s) */
   animationDurationSec: number;
-  /** Result panel scale 0.72..1.15 (default 0.92) */
+  /** Fortune popup size multiplier 0.72..1.25 (default 1.0) */
   panelScale: number;
-  /** Result panel RGBA opacity 0.25..0.85 (default 0.45) */
+  /** Fortune popup semi-transparent burgundy RGBA opacity 0.25..0.85 (default 0.55) */
   panelOpacity: number;
-  /** How long the center Xin Xăm result panel remains visible after reveal (ms) */
+  /** How long the fortune result popup remains visible after reveal in ms (default 8000ms = 8s) */
   resultDisplayDurationMs: number;
+  /** Compact (short excerpt + 1 concise advice) vs Detailed (full 4-line verse + interpretation) */
+  displayMode: XinXamPopupDisplayMode;
+  /** Responsive fortune text scale multiplier 0.80..1.30 (default 1.0) */
+  textScale: number;
   /** Internal settings schema version for smooth SQLite/localStorage upgrades */
   schemaVersion?: number;
 }
@@ -280,10 +329,12 @@ export const DEFAULT_XIN_XAM_SETTINGS: XinXamSettings = {
   voiceTemplate: DEFAULT_XIN_XAM_VOICE_TEMPLATE,
   particleDensity: 1.0,
   animationDurationSec: 6.2,
-  panelScale: 0.92,
-  panelOpacity: 0.45,
-  resultDisplayDurationMs: 6800,
-  schemaVersion: 2,
+  panelScale: 1.0,
+  panelOpacity: 0.55,
+  resultDisplayDurationMs: 8000,
+  displayMode: 'compact',
+  textScale: 1.0,
+  schemaVersion: 3,
 };
 
 export interface XinXamDrawResult {
@@ -1058,6 +1109,59 @@ export interface VoiceSettings {
 }
 
 export type QualityPreset = 'low' | 'medium' | 'high';
+
+export type TempleSceneMode = 'image_background' | 'original_3d';
+
+export interface SceneCalibrationSettings {
+  /** Active visual temple mode: 'image_background' (default) or 'original_3d' */
+  sceneMode: TempleSceneMode;
+  /** Permanent local background image path */
+  backgroundUrl: string;
+  /** Background scale multiplier (0.85 .. 1.35, default 1.0) */
+  bgScale: number;
+  /** Background horizontal offset in % (-20 .. +20, default 0) */
+  bgOffsetX: number;
+  /** Background vertical offset in % (-20 .. +20, default 0) */
+  bgOffsetY: number;
+  /** Camera zoom multiplier (0.75 .. 1.35, default 1.0) */
+  cameraZoom: number;
+  /** Seat wing horizontal width multiplier (0.70 .. 1.35, default 1.0) */
+  seatWidthScale: number;
+  /** Seat row depth span multiplier (0.70 .. 1.30, default 1.0) */
+  seatDepthScale: number;
+  /** Seat block Z shift (-2.5 .. +2.5, default 0) */
+  seatOffsetZ: number;
+  /** Character scale near the bottom foreground (0.60 .. 1.55, default 1.05) */
+  nearCharacterScale: number;
+  /** Character scale near the distant altar (0.45 .. 1.35, default 0.86) */
+  farCharacterScale: number;
+  /** Entrance / departure Z coordinate at the bottom of the red carpet (11.5 .. 17.5, default 14.9) */
+  entranceZ: number;
+  /** Altar ritual station base Z coordinate right in front of the wooden altar (-9.0 .. -6.8, default -8.15) */
+  altarStationZ: number;
+  /** Altar ritual station horizontal spread multiplier (0.65 .. 1.35, default 1.0) */
+  altarStationSpreadX: number;
+  /** Toggle visual perspective & floor alignment guide overlay for administrators */
+  showAlignmentGuides: boolean;
+}
+
+export const DEFAULT_SCENE_CALIBRATION: SceneCalibrationSettings = {
+  sceneMode: 'image_background',
+  backgroundUrl: '/assets/temple-background.png',
+  bgScale: 1.0,
+  bgOffsetX: 0,
+  bgOffsetY: 0,
+  cameraZoom: 1.0,
+  seatWidthScale: 1.0,
+  seatDepthScale: 1.0,
+  seatOffsetZ: 0,
+  nearCharacterScale: 1.05,
+  farCharacterScale: 0.86,
+  entranceZ: 14.9,
+  altarStationZ: -8.15,
+  altarStationSpreadX: 1.0,
+  showAlignmentGuides: false,
+};
 
 export interface StreamOverlaySettings {
   vertical916: boolean;

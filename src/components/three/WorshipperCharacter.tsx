@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { CharacterAnimState, Participant } from '../../types/temple';
-import { ENTRANCE_Z, getSeatPosition } from '../../systems/SeatManager';
+import {
+  getActiveCarpetLanes,
+  getActiveEntranceZ,
+  getSeatPosition,
+} from '../../systems/SeatManager';
+import { computeCharacterDepthScale } from '../../systems/SceneCalibration';
 import { soundSynthesizer } from '../../systems/SoundSynthesizer';
 import { tiktokEventManager } from '../../systems/TikTokEventManager';
 import { liveCharacterPositions } from './templeResources';
@@ -63,7 +68,15 @@ const SHARED_GEOS = {
 
   ringInner: new THREE.RingGeometry(0.38, 0.54, 24),
   ringOuter: new THREE.RingGeometry(0.62, 0.78, 28),
+  groundShadowDisc: new THREE.CircleGeometry(0.36, 20),
 };
+
+const CONTACT_SHADOW_MAT = new THREE.MeshBasicMaterial({
+  color: '#0d0402',
+  transparent: true,
+  opacity: 0.34,
+  depthWrite: false,
+});
 
 // Shared Materials at Module Scope
 const SKIN_MAT = new THREE.MeshStandardMaterial({
@@ -221,7 +234,7 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
   const blessRingRef = useRef<THREE.Mesh>(null);
   const grandOuterRingRef = useRef<THREE.Mesh>(null);
 
-  const seat = useMemo(() => getSeatPosition(participant.seatIndex), [participant.seatIndex]);
+  const initialSeat = useMemo(() => getSeatPosition(participant.seatIndex), [participant.seatIndex]);
   const robeMat = useMemo(() => {
     const idx =
       Math.abs(Math.round((participant.robeHueShift + 0.5) * 20)) % ROBE_MATERIAL_POOL.length;
@@ -231,7 +244,7 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
   const kin = useRef({
     x: participant.laneOffset,
     y: 0,
-    z: ENTRANCE_Z,
+    z: getActiveEntranceZ(),
     rotY: Math.PI, // Local +Z is character's front, so rotY = Math.PI faces -Z (toward Buddha!)
     stage: 'walking_aisle' as CharacterAnimState,
     stageTimer: 0,
@@ -252,9 +265,10 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
   // React to seat reassignments, 120s inactivity departure/cancellation, Altar Ceremonies, or Wooden Fish milestones
   useEffect(() => {
     if (kin.current.initializedSeatIdx !== participant.seatIndex) {
+      const nextSeat = getSeatPosition(participant.seatIndex);
       kin.current.initializedSeatIdx = participant.seatIndex;
-      kin.current.x = seat.x;
-      kin.current.z = seat.z;
+      kin.current.x = nextSeat.x;
+      kin.current.z = nextSeat.z;
       kin.current.rotY = Math.PI;
       kin.current.activeRitualId = null;
       kin.current.activeWoodenFishId = null;
@@ -357,8 +371,8 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     participant.animState,
     participant.animStateStartedAt,
     participant.seatIndex,
-    seat.x,
-    seat.z,
+    initialSeat.x,
+    initialSeat.z,
   ]);
 
   useEffect(() => {
@@ -378,6 +392,9 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     const delta = Math.min(rawDelta, 0.08);
     const k = kin.current;
     const t = state.clock.elapsedTime;
+    const seat = getSeatPosition(participant.seatIndex);
+    const activeEntranceZ = getActiveEntranceZ();
+    const carpetLanes = getActiveCarpetLanes(seat.side, participant.activeRitual?.type === 'xin_xam');
     const ritual = participant.activeRitual;
     const woodenFishAct = participant.activeWoodenFish;
     k.stageTimer += delta;
@@ -538,7 +555,8 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
         isWalking = true;
         applyCarriedPropFlags();
 
-        const targetXNow = k.z > -6.9 ? ritual.outboundLaneX : ritual.targetX;
+        const targetXNow =
+          k.z > carpetLanes.altarApproachThresholdZ ? ritual.outboundLaneX : ritual.targetX;
         const dx = targetXNow - k.x;
         const dz = ritual.targetZ - k.z;
         const dist = Math.hypot(dx, dz);
@@ -877,7 +895,7 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
         isWalking = true;
         handsJoined = true;
         k.z = THREE.MathUtils.damp(k.z, seat.aisleZ, 10, delta);
-        const exitLaneX = seat.side === 'left' ? -0.66 : 0.66;
+        const exitLaneX = carpetLanes.exitLaneX;
         const dx = exitLaneX - k.x;
         targetRotY = dx >= 0 ? Math.PI / 2 : -Math.PI / 2;
         const step = walkSpeed * 0.98 * delta;
@@ -895,11 +913,11 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       case 'departing_exit': {
         isWalking = true;
         targetRotY = 0; // Face +Z toward the temple entrance/exit!
-        const exitLaneX = seat.side === 'left' ? -0.66 : 0.66;
+        const exitLaneX = carpetLanes.exitLaneX;
         k.x = THREE.MathUtils.damp(k.x, exitLaneX, 8, delta);
         const step = walkSpeed * 1.12 * delta;
-        if (k.z >= ENTRANCE_Z - 0.15) {
-          k.z = ENTRANCE_Z;
+        if (k.z >= activeEntranceZ - 0.15) {
+          k.z = activeEntranceZ;
           k.stage = 'departing_fade';
           k.stageTimer = 0;
         } else {
@@ -1055,6 +1073,20 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       }
     }
 
+    // Keep seated characters smoothly locked to live calibrated seat coordinates when admin adjusts sliders or switches scene mode
+    const isAtReservedSeat =
+      k.stage === 'kneeling' ||
+      k.stage === 'bowing' ||
+      k.stage === 'praying' ||
+      k.stage === 'wooden_fish' ||
+      k.stage === 'offering' ||
+      k.stage === 'gift_blessing' ||
+      k.stage === 'sitting';
+    if (isAtReservedSeat) {
+      k.x = THREE.MathUtils.damp(k.x, seat.x, 12, delta);
+      k.z = THREE.MathUtils.damp(k.z, seat.z, 12, delta);
+    }
+
     // Shortest-arc rotation interpolation
     let angleDiff = targetRotY - k.rotY;
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -1069,9 +1101,12 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
     }
     k.y = THREE.MathUtils.damp(k.y, targetBaseY, 12, delta);
 
+    const charScale = computeCharacterDepthScale(k.z);
+
     if (rootRef.current) {
       rootRef.current.position.set(k.x, k.y, k.z);
       rootRef.current.rotation.y = k.rotY;
+      rootRef.current.scale.setScalar(charScale);
     }
 
     if (upperBodyRef.current) {
@@ -1237,16 +1272,23 @@ export function WorshipperCharacter({ participant, castShadows }: WorshipperChar
       liveEntry.x = k.x;
       liveEntry.y = k.y;
       liveEntry.z = k.z;
-      liveEntry.headY = isKneelingPosture ? 1.12 : 1.38;
+      liveEntry.headY = (isKneelingPosture ? 1.12 : 1.38) * charScale;
     }
   });
 
   return (
     <group
       ref={rootRef}
-      position={[participant.laneOffset, 0, ENTRANCE_Z]}
+      position={[participant.laneOffset, 0, getActiveEntranceZ()]}
       rotation={[0, Math.PI, 0]}
     >
+      {/* Grounding Contact Shadow Disc so character rests naturally on the temple floor */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.012, 0]}
+        geometry={SHARED_GEOS.groundShadowDisc}
+        material={CONTACT_SHADOW_MAT}
+      />
       {/* Golden Blessing Ring beneath character */}
       <mesh
         ref={blessRingRef}
